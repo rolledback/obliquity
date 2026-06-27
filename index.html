@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Dark theme from the very first paint, so a refresh never flashes a white page before
+         the stylesheet/app loads. color-scheme darkens the browser's own default surfaces. -->
+    <meta name="color-scheme" content="dark" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #05070d; }
+    </style>
+    <title>Obliquity: Earth rotation simulator</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="topbar">
+        <div class="topbar-title">
+          <h1>Obliquity</h1>
+          <p id="subtitle">Reshape Earth's spin and watch how the Sun moves across your sky.</p>
+        </div>
+        <div id="scenario-bar">
+          <button id="scenario-prev" class="scenario-step" title="Previous scenario" aria-label="Previous scenario">&#9664;</button>
+          <select id="scenario-select" aria-label="Scenario"></select>
+          <button id="scenario-next" class="scenario-step" title="Next scenario" aria-label="Next scenario">&#9654;</button>
+          <button id="scenario-random" class="scenario-dice" title="Surprise me" aria-label="Surprise me">&#127922;</button>
+          <button id="scenario-share" class="scenario-share" title="Copy a shareable link to this scenario" aria-label="Copy a shareable link to this scenario">&#128279;</button>
+        </div>
+        <div id="readout"></div>
+      </header>
+
+      <div id="scenario-desc"></div>
+      <div id="share-toast" role="status" aria-live="polite" hidden></div>
+
+      <div id="flash-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="flash-modal-title" aria-describedby="flash-modal-body" hidden>
+        <div class="modal-card" role="document">
+          <h2 id="flash-modal-title">Fast flashing ahead</h2>
+          <p id="flash-modal-body">
+            At this speed the Sky view flashes rapidly between bright day and dark night.
+            Fast full-screen flashing can be uncomfortable and may trigger seizures in people
+            with photosensitive epilepsy. The simulation stays paused here until you choose.
+          </p>
+          <label class="modal-check">
+            <input type="checkbox" id="flash-dont-ask" />
+            <span>Don&rsquo;t ask me again</span>
+          </label>
+          <div class="modal-actions">
+            <button id="flash-cancel" class="modal-btn modal-btn-safe" type="button">Keep it paused</button>
+            <button id="flash-slow" class="modal-btn modal-btn-primary" type="button">Slow to a safe speed</button>
+            <button id="flash-continue" class="modal-btn modal-btn-go" type="button">Show me anyway</button>
+          </div>
+        </div>
+      </div>
+
+      <main id="scene">
+        <div id="view-toggle">
+          <button data-view="orbit" class="active">Orbit</button>
+          <button data-view="ground">Sky view</button>
+        </div>
+        <div id="gui-left"></div>
+        <div id="gui-container"></div>
+        <div id="heading-readout" hidden></div>
+        <div id="scene-hint">Drag to orbit &middot; scroll to zoom</div>
+      </main>
+
+      <div
+        id="plots-resizer"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize charts (drag, or arrow keys; double-click to reset)"
+        tabindex="0"
+      ></div>
+
+      <section id="plots">
+        <div id="bottom-toolbar">
+          <div id="bottom-view-toggles" role="group" aria-label="Bottom views">
+            <button class="view-chip" data-view="realGraph" aria-pressed="true">Real Earth</button>
+            <button class="view-chip" data-view="customGraph" aria-pressed="true">My Earth</button>
+            <button class="view-chip" data-view="locationMap" aria-pressed="false">Location map</button>
+          </div>
+          <div id="plot-mode-toggle" role="group" aria-label="Graph mode">
+            <span class="toolbar-label">Graph:</span>
+            <button data-mode="day" class="active">Day</button>
+            <button data-mode="year">Year</button>
+            <button data-mode="climate">Climate</button>
+          </div>
+        </div>
+
+        <div id="bottom-view-strip">
+          <div class="panel" data-view-id="realGraph" data-config="realistic">
+            <div class="panel-head">
+              <span class="panel-title">Real Earth</span>
+              <span class="panel-caption">Sun's height in the sky, midnight to midnight</span>
+              <button class="panel-close" data-view="realGraph" title="Hide this view" aria-label="Hide Real Earth view">&times;</button>
+            </div>
+            <div class="chart-wrap">
+              <canvas class="skyplot"></canvas>
+              <div class="banner" hidden></div>
+            </div>
+            <div class="stats"></div>
+          </div>
+          <div class="panel" data-view-id="customGraph" data-config="custom">
+            <div class="panel-head">
+              <span class="panel-title">Your Earth</span>
+              <span class="panel-caption">Sun's height in the sky, midnight to midnight</span>
+              <button class="panel-close" data-view="customGraph" title="Hide this view" aria-label="Hide Your Earth view">&times;</button>
+            </div>
+            <div class="chart-wrap">
+              <canvas class="skyplot"></canvas>
+              <div class="banner" hidden></div>
+            </div>
+            <div class="stats"></div>
+          </div>
+          <div class="panel map-panel" data-view-id="locationMap">
+            <div class="panel-head">
+              <span class="panel-title">Location map</span>
+              <span class="panel-caption">Drag the pin (or click) to choose where you observe from</span>
+              <button class="panel-close" data-view="locationMap" title="Hide this view" aria-label="Hide Location map view">&times;</button>
+            </div>
+            <div class="chart-wrap">
+              <canvas class="earth-map" tabindex="0" aria-label="Equirectangular Earth map; drag to set observation location"></canvas>
+            </div>
+            <div class="stats"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

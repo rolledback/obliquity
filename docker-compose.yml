@@ -1,0 +1,11 @@
+# Self-hosting Obliquity (the Earth rotation simulator) on a homelab.
+#   docker compose up -d --build
+# Then browse to http://<host>:8080  (change the published port below to taste).
+services:
+  obliquity:
+    build: .
+    image: obliquity:latest
+    container_name: obliquity
+    ports:
+      - "8080:80"
+    restart: unless-stopped

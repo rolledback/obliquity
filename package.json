@@ -1,0 +1,24 @@
+{
+  "name": "obliquity",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Simulate alternative Earth rotation configurations and compare the Sun's transit across the sky.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build && node scripts/compress.mjs",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "lil-gui": "^0.19.2",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.169.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.4"
+  }
+}

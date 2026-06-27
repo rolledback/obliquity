@@ -1,0 +1,19 @@
+# Keep the build context small and, crucially, never copy the host's node_modules
+# (built for macOS) over the Linux modules installed inside the image.
+node_modules
+dist
+dist-ssr
+
+.git
+.gitignore
+.github
+
+*.local
+*.log
+.DS_Store
+.vscode
+
+# Docker files themselves aren't needed inside the build context.
+Dockerfile
+.dockerignore
+docker-compose.yml
