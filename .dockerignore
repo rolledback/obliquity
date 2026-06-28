@@ -13,6 +13,10 @@ dist-ssr
 .DS_Store
 .vscode
 
+# Docs and screenshots are for the README, not the runtime image.
+docs
+README.md
+
 # Docker files themselves aren't needed inside the build context.
 Dockerfile
 .dockerignore
