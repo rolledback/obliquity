@@ -1,8 +1,3 @@
-// The configurable bottom view strip: 0-3 resizable, closeable, persisted columns
-// (Real Earth graphs, Your Earth graphs, and a draggable location map). This owns the
-// strip DOM, the column resizers, the toolbar chips / per-panel close buttons, and the
-// localStorage layout persistence; the host wires it to state and a redraw callback.
-
 import type { AppState, BottomViewId } from '../state';
 import { BOTTOM_VIEW_ORDER } from '../state';
 import { clamp } from '../astro/vec';
@@ -15,13 +10,9 @@ const BOTTOM_LAYOUT_KEY = 'obliquity:bottom-layout:v2';
 
 export interface BottomStripDeps {
   state: AppState;
-  /** The grid container the columns + resizers are laid into. */
   stripEl: HTMLElement;
-  /** The chart-tab toggle, dimmed when no graph column is shown. */
   plotModeToggleEl: HTMLElement;
-  /** The location map, re-fit whenever the strip is resized. */
   locationMap: LocationMap;
-  /** Redraw the graphs after the visible set or column widths change. */
   onLayoutChange: () => void;
 }
 
@@ -45,7 +36,6 @@ export class BottomStrip {
       locationMap: this.stripEl.querySelector('[data-view-id="locationMap"]') as HTMLElement,
     };
 
-    // Toolbar chips toggle a view; per-panel close buttons hide that view.
     document.querySelectorAll<HTMLButtonElement>('#bottom-view-toggles .view-chip').forEach((chip) => {
       chip.addEventListener('click', () => {
         const id = chip.dataset.view as BottomViewId;
@@ -60,15 +50,15 @@ export class BottomStrip {
     this.relayout();
   }
 
-  /** Re-fit the non-graph views (graphs auto-size on render); called after any size change. */
+  /** Resize views that do not size themselves during rendering. */
   resizeViews(): void {
     if (this.state.bottomViews.includes('locationMap')) this.locationMap.resize();
   }
 
-  /** Rebuild the strip's children (panels + resizers between them) and its columns. */
+  /** Rebuild the visible panels, resizers, and columns. */
   relayout(): void {
     const visible = this.visibleViews();
-    this.stripEl.replaceChildren(); // detach panels; their plot instances stay alive in JS
+    this.stripEl.replaceChildren(); // Detach without recreating the persistent panels.
     if (visible.length === 0) {
       const hint = document.createElement('div');
       hint.className = 'empty-hint';
@@ -82,7 +72,6 @@ export class BottomStrip {
       });
       this.applyColumns();
     }
-    // Sync the toolbar chips and dim the graph-mode toggle when no graph view is shown.
     document.querySelectorAll<HTMLButtonElement>('#bottom-view-toggles .view-chip').forEach((chip) => {
       chip.setAttribute('aria-pressed', String(this.state.bottomViews.includes(chip.dataset.view as BottomViewId)));
     });
@@ -93,12 +82,10 @@ export class BottomStrip {
     this.onLayoutChange();
   }
 
-  /** The visible views in canonical (fixed) left-to-right order. */
   private visibleViews(): BottomViewId[] {
     return BOTTOM_VIEW_ORDER.filter((v) => this.state.bottomViews.includes(v));
   }
 
-  /** Build the grid-template-columns string for the visible views and their resizer tracks. */
   private stripColumns(visible: BottomViewId[]): string {
     const cols: string[] = [];
     visible.forEach((v, i) => {
@@ -108,13 +95,10 @@ export class BottomStrip {
     return cols.join(' ');
   }
 
-  /** Cheap update of just the column widths (used live while dragging a resizer). */
   private applyColumns(): void {
     this.stripEl.style.gridTemplateColumns = this.stripColumns(this.visibleViews());
   }
 
-  /** Re-fit columns + non-graph views and redraw the graphs after a width change; optionally
-   * persist the new layout. Shared by the resizer drag, keyboard nudge, and reset paths. */
   private refreshSizing(persist = false): void {
     this.applyColumns();
     this.resizeViews();
@@ -122,7 +106,6 @@ export class BottomStrip {
     if (persist) this.save();
   }
 
-  /** Show or hide a view, keeping the fixed canonical order, then relayout + persist. */
   private setView(id: BottomViewId, on: boolean): void {
     if (on === this.state.bottomViews.includes(id)) return;
     this.state.bottomViews = on
@@ -132,8 +115,7 @@ export class BottomStrip {
     this.save();
   }
 
-  // A draggable divider between two adjacent columns. Dragging shifts width between just the
-  // two neighbours (their weight sum is held constant, so other columns are untouched).
+  // Preserve the two neighboring columns' total weight while dragging.
   private makeColResizer(leftId: BottomViewId, rightId: BottomViewId): HTMLElement {
     const el = document.createElement('div');
     el.className = 'plot-col-resizer';
@@ -188,7 +170,6 @@ export class BottomStrip {
     return el;
   }
 
-  /** Reset all visible columns to equal widths. */
   private resetWidths(): void {
     this.visibleViews().forEach((v) => (this.state.bottomViewWeights[v] = 1));
     this.refreshSizing(true);
@@ -207,7 +188,7 @@ export class BottomStrip {
     try {
       const parsed = JSON.parse(raw) as { views?: unknown; weights?: unknown };
       if (Array.isArray(parsed.views)) {
-        // Keep only known ids, in canonical order; an empty array (all hidden) is valid.
+        // Filtering through the canonical order also rejects unknown saved IDs.
         this.state.bottomViews = BOTTOM_VIEW_ORDER.filter((v) => (parsed.views as unknown[]).includes(v));
       }
       if (parsed.weights && typeof parsed.weights === 'object') {
@@ -218,7 +199,6 @@ export class BottomStrip {
         }
       }
     } catch {
-      /* corrupt or unavailable: fall back to defaults */
     }
   }
 }

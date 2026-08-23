@@ -1,7 +1,6 @@
-// localStorage access that never throws. Some contexts (private mode, sandboxed iframes)
-// deny storage and raise on access, so every read and write is guarded; persistence is a
-// best-effort nicety, never a hard requirement.
+// Storage can throw in restricted contexts, so persistence remains best-effort.
 
+/** Read a stored value, returning null if absent or unavailable. */
 export function storageGet(key: string): string | null {
   try {
     return localStorage.getItem(key);
@@ -10,10 +9,10 @@ export function storageGet(key: string): string | null {
   }
 }
 
+/** Store a value when storage is available. */
 export function storageSet(key: string, value: string): void {
   try {
     localStorage.setItem(key, value);
   } catch {
-    /* storage unavailable; skip persistence */
   }
 }

@@ -1,10 +1,3 @@
-// 2D "Sun through the day" chart: the Sun's height above the horizon (Y) over the
-// course of one day (X = local solar time, midnight -> noon -> midnight). This is
-// the layman-friendly view: "the Sun rises, climbs, peaks around noon, then sets."
-//
-// The compass direction the Sun rises/sets is preserved as text on the markers and
-// in the summary, rather than as the X-axis (which people misread as time).
-
 import type { DayPath, DaySample } from '../astro/daypath';
 import { dayOfYearLabel } from '../astro/presets';
 import { clamp, posMod, wrapSignedDeg } from '../astro/vec';
@@ -59,8 +52,6 @@ export class SkyPlot extends Plot {
     this.renderStats(input);
   }
 
-  // Shade night (whole plot) then paint daylight bands so "how long is the day"
-  // is visible at a glance.
   private drawDayNight(
     ctx: CanvasRenderingContext2D,
     intervals: [number, number][],
@@ -158,8 +149,6 @@ export class SkyPlot extends Plot {
     this.stroke(ctx, samples, X, Y, (a, b) => a.altDeg >= 0 || b.altDeg >= 0);
   }
 
-  // Stroke altitude-vs-time. The time axis is single valued, so the line never has a
-  // wrap seam to break it.
   private stroke(
     ctx: CanvasRenderingContext2D,
     samples: DaySample[],
@@ -207,8 +196,7 @@ export class SkyPlot extends Plot {
         `Sunset ${clockShort(sunset.hour)} \u00B7 ${compass16(sunset.azDeg)}`, 'center');
     }
 
-    // The Sun is highest at local solar noon by construction (12:00 is defined that way),
-    // so the peak marker uses the exact culmination altitude rather than scanning samples.
+    // Local solar noon gives the exact peak without scanning samples.
     const peakAlt = path.stats.peakAltDeg;
     if (peakAlt > 0) {
       const px = X(12);
@@ -246,7 +234,6 @@ export class SkyPlot extends Plot {
     ctx.stroke();
   }
 
-  // A small text label with a translucent backing pill for legibility.
   private label(
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -354,11 +341,9 @@ export class SkyPlot extends Plot {
     if (Number.isFinite(s.solarDayHours) && Math.abs(s.solarDayHours - 24) > 0.05) {
       chips.push(`<span class="chip">One full day lasts <b>${s.solarDayHours.toFixed(1)} h</b></span>`);
     }
-    this.statsEl.innerHTML = chips.join('');
+    this.setStats(chips.join(''));
   }
 }
-
-// ---- helpers ---------------------------------------------------------------
 
 function fade(color: string, alpha: number): string {
   if (color.startsWith('#')) {
@@ -370,13 +355,11 @@ function fade(color: string, alpha: number): string {
   return color;
 }
 
-// Interpolate azimuth across the 0/360 wrap.
+// Take the shortest path across the 0/360 seam.
 function lerpAz(a: number, b: number, f: number): number {
   return posMod(a + wrapSignedDeg(b - a) * f, 360);
 }
 
-// Horizon crossings (sunrise = altitude going up, sunset = going down), with the
-// interpolated local-solar-time hour and compass azimuth at each crossing.
 function findCrossings(samples: DaySample[]): Crossing[] {
   const out: Crossing[] = [];
   for (let i = 1; i < samples.length; i++) {
@@ -395,7 +378,6 @@ function findCrossings(samples: DaySample[]): Crossing[] {
   return out;
 }
 
-// Time ranges (in hours) where the Sun is above the horizon.
 function daylightIntervals(samples: DaySample[]): [number, number][] {
   const intervals: [number, number][] = [];
   let start: number | null = samples.length && samples[0].altDeg > 0 ? 0 : null;
@@ -410,16 +392,14 @@ function daylightIntervals(samples: DaySample[]): [number, number][] {
   return intervals;
 }
 
-// Plain-word 8-point direction, e.g. "north-east".
 function compassWord(azDeg: number): string {
   const dirs = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
   return dirs[Math.round(posMod(azDeg, 360) / 45) % 8];
 }
 
-// Hour 0..24 -> "5:12am" / "1:30pm" / "Noon" / "Midnight".
 function clockShort(hour: number): string {
   const { h: rawH, m } = splitHours(posMod(hour, 24));
-  const h = rawH % 24; // splitHours can roll 23:59.7 up to 24:00
+  const h = rawH % 24; // splitHours can round 23:59.7 to 24:00.
   if (h === 12 && m === 0) return 'Noon';
   if (h === 0 && m === 0) return 'Midnight';
   const ampm = h < 12 ? 'am' : 'pm';

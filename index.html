@@ -7,12 +7,76 @@
     <!-- Dark theme from the very first paint, so a refresh never flashes a white page before
          the stylesheet/app loads. color-scheme darkens the browser's own default surfaces. -->
     <meta name="color-scheme" content="dark" />
+    <!-- The globe texture is the largest asset and is only discovered once the bundle runs.
+         Preloading fetches it alongside the JS instead of after it. -->
+    <link rel="preload" as="image" href="/textures/earth.webp" />
+    <!-- Everything needed for the loading state lives here, inline, so it is painted with the
+         first frame rather than waiting on the stylesheet or the bundle. Without it the shell
+         renders in about 0.6s while the app cannot start for another 3s, so the page sits
+         there looking finished but dead: empty dropdown, empty panels, blank scene. -->
     <style>
       html, body { margin: 0; height: 100%; background: #05070d; }
+      #app { opacity: 0; }
+      html.ready #app { opacity: 1; transition: opacity 260ms ease-out; }
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        background: #05070d;
+        color: #8fa3c4;
+        font: 500 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        letter-spacing: 0.02em;
+      }
+      html.ready #boot {
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 260ms ease-out;
+      }
+      /* A lit crescent turning in the dark: the subject of the app, not a generic spinner. */
+      #boot-orb {
+        width: 46px;
+        height: 46px;
+        border-radius: 50%;
+        background: #111a2b;
+        box-shadow: inset -13px -4px 0 -6px #ffce54, 0 0 22px rgba(255, 206, 84, 0.16);
+        animation: boot-turn 2.4s linear infinite;
+      }
+      #boot-name { font-size: 13px; color: #64789c; }
+      @keyframes boot-turn { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-orb { animation: none; }
+        html.ready #app, html.ready #boot { transition: none; }
+      }
     </style>
     <title>Obliquity: Earth rotation simulator</title>
   </head>
   <body>
+    <div id="boot" role="status" aria-live="polite">
+      <div id="boot-orb"></div>
+      <div id="boot-name">Obliquity is starting</div>
+    </div>
+    <script>
+      // Failsafe. The app lifts the loading state once it has drawn its first frame, but if
+      // the bundle fails to load or throws on the way up, nothing would ever lift it and the
+      // page would sit on a spinner for ever. Reveal on an uncaught error at once, and give
+      // up waiting after a while regardless: a half-built page is poor, a permanent spinner
+      // is worse.
+      (function () {
+        var reveal = function () {
+          document.documentElement.classList.add('ready');
+        };
+        // Capture phase, because a script or stylesheet that fails to LOAD fires its error
+        // on the element and does not bubble; only the capture phase sees it at window.
+        window.addEventListener('error', reveal, true);
+        window.addEventListener('unhandledrejection', reveal);
+        setTimeout(reveal, 8000);
+      })();
+    </script>
     <div id="app">
       <header id="topbar">
         <div class="topbar-title">
@@ -48,6 +112,16 @@
             <button id="flash-cancel" class="modal-btn modal-btn-safe" type="button">Keep it paused</button>
             <button id="flash-slow" class="modal-btn modal-btn-primary" type="button">Slow to a safe speed</button>
             <button id="flash-continue" class="modal-btn modal-btn-go" type="button">Show me anyway</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="notice-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="notice-modal-title" aria-describedby="notice-modal-body" hidden>
+        <div class="modal-card" role="document">
+          <h2 id="notice-modal-title">No eclipse found</h2>
+          <p id="notice-modal-body"></p>
+          <div class="modal-actions">
+            <button id="notice-ok" class="modal-btn modal-btn-primary" type="button">Close</button>
           </div>
         </div>
       </div>

@@ -270,6 +270,10 @@ body {
   color: var(--text-dim);
   white-space: nowrap;
   justify-self: end;
+  /* justify-self:end sizes the box to its content, which would let a long readout (Moon
+     phase plus an eclipse badge) spill left across the scenario picker. Capping it at the
+     grid cell is what lets overflow/ellipsis actually engage. */
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -278,6 +282,45 @@ body {
 #readout b {
   color: var(--text);
   font-weight: 600;
+}
+
+/* Eclipse jump controls: a label with Prev and Next side by side, so each kind of
+   eclipse needs one row instead of two full-width buttons. */
+.eclipse-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+}
+
+.eclipse-row-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.eclipse-btn {
+  font: inherit;
+  font-size: 11px;
+  color: var(--text);
+  background: #1b2436;
+  border: 1px solid #2b3852;
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.eclipse-btn:hover:not(:disabled) {
+  background: #24304a;
+}
+
+.eclipse-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 /* Active-scenario description: a thin, fixed-height strip so cycling scenarios never

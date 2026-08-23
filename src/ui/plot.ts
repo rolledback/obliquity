@@ -1,7 +1,4 @@
-// Shared scaffolding for the comparison chart panels (sky path, year heatmap, climate).
-// Each concrete plot owns its own PAD and render logic; the base supplies the canvas,
-// drawing context, stat/banner elements, and the sized "begin" that every render repeats.
-
+import { CALENDAR_DAYS } from '../astro/calendar';
 import { beginCanvas } from './draw';
 import { clamp, posMod } from '../astro/vec';
 
@@ -21,18 +18,19 @@ export interface PlotRect {
   plotH: number;
 }
 
-/** A scrub target produced by a plot's pickTime(): the time to move the simulation to. */
+/** A time selected by scrubbing a plot. */
 export interface TimePick {
-  /** Day of the year, 1..365. */
+  /** Day position to select. */
   dayOfYear?: number;
   /** Local solar time, 0..24. */
   timeOfDay?: number;
-  /** Absolute elapsed orbit to jump to (climate plot, which can span several years). */
+  /** Absolute elapsed orbit to jump to. */
   orbit?: number;
 }
 
 export abstract class Plot {
   protected ctx: CanvasRenderingContext2D;
+  private statsHtml = '';
 
   constructor(
     protected canvas: HTMLCanvasElement,
@@ -42,8 +40,14 @@ export abstract class Plot {
     this.ctx = canvas.getContext('2d')!;
   }
 
-  /** Size and clear the canvas, returning the plot rectangle, or null when it has no
-   * layout size yet (in which case the caller should bail out of render). */
+  /** Update summary chips only when changed, since identical HTML writes still force layout. */
+  protected setStats(html: string): void {
+    if (html === this.statsHtml) return;
+    this.statsHtml = html;
+    this.statsEl.innerHTML = html;
+  }
+
+  /** Prepare the canvas, or return null before it has a layout size. */
   protected begin(pad: Pad): PlotRect | null {
     const dims = beginCanvas(this.canvas, this.ctx);
     if (!dims) return null;
@@ -55,12 +59,7 @@ export abstract class Plot {
     };
   }
 
-  /**
-   * Map a pointer position (canvas-local CSS pixels) to fractions across the plotting
-   * area, 0..1 in each axis. Returns null when the canvas has no size, or when the point
-   * is outside the plotting rectangle and `clampOutside` is false (used so a hover only
-   * lights up over the chart, while an active drag keeps tracking past the edges).
-   */
+  /** Map canvas coordinates to plot fractions, optionally clamping outside points. */
   protected pickFractions(
     px: number,
     py: number,
@@ -81,25 +80,21 @@ export abstract class Plot {
   }
 }
 
-// ---- multi-year window helpers ---------------------------------------------
-// The year heatmap and the climate chart both lay `years` consecutive orbits side by side,
-// aligned to a block that contains the current orbit, so the "now" marker always lands in
-// view. These shared helpers keep the render-time placement and the pointer-inversion in
-// lock-step (any drift between them would put a click on the wrong year).
+// Keep multi-year rendering and pointer inversion on the same aligned window.
 
-/** Start of the `years`-orbit window that contains the given orbit. */
+/** Start of the aligned window containing the rounded orbit. */
 export function alignedSpanStart(orbit: number, years: number): number {
   return Math.round(orbit) - posMod(Math.round(orbit), years);
 }
 
-/** Which slot (0..years-1) within its aligned window the orbit occupies. */
+/** Slot occupied by the rounded orbit within its aligned window. */
 export function orbitSlot(orbit: number, years: number): number {
   return posMod(Math.round(orbit), years);
 }
 
-/** Invert a fractional x (0..1 across a `years`-wide span) to a day-of-year and a slot. */
+/** Invert a fractional x to an unclamped day position and year slot. */
 export function pickDayOrbit(fx: number, years: number): { dayOfYear: number; slot: number } {
-  const dayAbs = fx * years * 365;
-  const slot = Math.min(Math.floor(dayAbs / 365), years - 1);
-  return { dayOfYear: dayAbs - slot * 365 + 1, slot };
+  const dayAbs = fx * years * CALENDAR_DAYS;
+  const slot = Math.min(Math.floor(dayAbs / CALENDAR_DAYS), years - 1);
+  return { dayOfYear: dayAbs - slot * CALENDAR_DAYS + 1, slot };
 }

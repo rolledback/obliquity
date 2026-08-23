@@ -1,19 +1,10 @@
-// A draggable 2D world map for choosing the observation location.
-//
-// The map is an equirectangular projection of Earth (the same texture the 3D globe uses),
-// where longitude maps linearly to x and latitude to y, so dragging across the image moves
-// the observer to exactly the spot under the pointer. The map is letterboxed (kept at its
-// true 2:1 aspect) inside whatever column width it is given, with a dark backdrop so the
-// empty margin reads as intentional. Click or drag updates the location live.
-
 import { clamp } from '../astro/vec';
 import { beginCanvas } from './draw';
 
-const PIN_COLOR = '#ff5e7e'; // matches the 3D scene's location marker
+const PIN_COLOR = '#ff5e7e';
 const GRATICULE = 'rgba(255,255,255,0.16)';
 const MARGIN_FILL = '#05070f';
 
-/** The drawn map rectangle (CSS px) inside the letterboxed canvas. */
 interface MapRect {
   x: number;
   y: number;
@@ -29,11 +20,6 @@ export class LocationMap {
   private lonDeg = 0;
   private dragging = false;
 
-  /**
-   * @param canvas  the map canvas
-   * @param statsEl the chip row beneath it (shows the current lat/lon)
-   * @param onPick  called with a new (latDeg, lonDeg) whenever the user clicks/drags
-   */
   constructor(
     private canvas: HTMLCanvasElement,
     private statsEl: HTMLElement,
@@ -45,25 +31,26 @@ export class LocationMap {
       this.imgReady = true;
       this.render();
     };
+    this.img.onerror = () => {
+      console.warn(`Obliquity: could not load ${this.img.src}; the location map will be blank`);
+    };
     this.img.src = `${import.meta.env.BASE_URL}textures/earth.webp`;
     this.attachPointer();
     this.attachKeyboard();
   }
 
-  /** Update the pin to a location set elsewhere (sliders, scenarios, cities). */
+  /** Update the pin after the location changes elsewhere. */
   setLocation(latDeg: number, lonDeg: number) {
     this.latDeg = latDeg;
     this.lonDeg = lonDeg;
     this.render();
   }
 
-  /** Re-fit and redraw (called when the column is resized). */
   resize() {
     this.render();
   }
 
-  // The letterboxed map rectangle for the current canvas size: the largest 2:1 box that
-  // fits, centred, so the world is never stretched.
+  // Preserve the map's 2:1 aspect ratio without stretching.
   private mapRect(cw: number, ch: number): MapRect {
     let w = cw;
     let h = cw / 2;
@@ -114,7 +101,6 @@ export class LocationMap {
     const x = r.x + ((this.lonDeg + 180) / 360) * r.w;
     const y = r.y + ((90 - this.latDeg) / 180) * r.h;
     const ctx = this.ctx;
-    // Crosshair guides across the whole map so the exact column/row is obvious.
     ctx.strokeStyle = 'rgba(255,94,126,0.45)';
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -123,7 +109,6 @@ export class LocationMap {
     ctx.moveTo(x, r.y);
     ctx.lineTo(x, r.y + r.h);
     ctx.stroke();
-    // The pin dot.
     ctx.beginPath();
     ctx.arc(x, y, 5, 0, Math.PI * 2);
     ctx.fillStyle = PIN_COLOR;
@@ -141,7 +126,6 @@ export class LocationMap {
       `<span class="chip">Lon: <b>${Math.abs(this.lonDeg).toFixed(1)}\u00B0${ew}</b></span>`;
   }
 
-  // Map a pointer event to a clamped (lat, lon) within the drawn map rectangle.
   private pickLatLon(e: PointerEvent): { latDeg: number; lonDeg: number } {
     const rect = this.canvas.getBoundingClientRect();
     const cw = this.canvas.clientWidth;

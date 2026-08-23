@@ -1,5 +1,4 @@
-// Shared 2D canvas helpers used by the chart panels (sky path, year heatmap, climate).
-
+import { CALENDAR_DAYS } from '../astro/calendar';
 import { clamp, posMod } from '../astro/vec';
 import { MONTH_DAYS, MONTH_LETTERS, MONTH_START_DAYS } from '../astro/presets';
 import { displayPixelRatio } from '../displayRatio';
@@ -19,10 +18,7 @@ export const TIME_OF_DAY_TICKS: readonly [number, string][] = [
   [24, '12am'],
 ];
 
-/**
- * Size a canvas for crisp HiDPI drawing and clear it. Returns the CSS pixel size, or
- * null when the canvas has no layout size yet (in which case the caller should bail).
- */
+/** Prepare a crisp HiDPI canvas, or return null before it has a layout size. */
 export function beginCanvas(
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
@@ -31,8 +27,13 @@ export function beginCanvas(
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
   if (w === 0 || h === 0) return null;
-  canvas.width = Math.round(w * dpr);
-  canvas.height = Math.round(h * dpr);
+  const pxW = Math.round(w * dpr);
+  const pxH = Math.round(h * dpr);
+  // Reassigning unchanged dimensions still reallocates the canvas backing store.
+  if (canvas.width !== pxW || canvas.height !== pxH) {
+    canvas.width = pxW;
+    canvas.height = pxH;
+  }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   return { w, h };
@@ -85,10 +86,7 @@ export function compass16(azDeg: number): string {
   return COMPASS_16[Math.round(posMod(azDeg, 360) / 22.5) % 16];
 }
 
-/**
- * Draw the "now" marker shared by the year and climate charts: a dashed vertical line
- * between lineTop and lineBottom plus a white dot (dark outline) at (x, y).
- */
+/** Draw the shared year and climate chart marker for the current time. */
 export function drawNowMarker(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -115,12 +113,6 @@ export function drawNowMarker(
   ctx.stroke();
 }
 
-/**
- * Draw one year's worth of month gridlines and single-letter labels across a span. The
- * year heatmap calls it once for the whole width; the climate chart calls it per year
- * (passing that year's origin and width). `skipFirstGridline` lets the caller suppress the
- * January line where a heavier year separator already sits.
- */
 function drawMonthTicks(
   ctx: CanvasRenderingContext2D,
   originX: number,
@@ -133,7 +125,7 @@ function drawMonthTicks(
   ctx.textAlign = 'center';
   for (let m = 0; m < 12; m++) {
     if (!(opts.skipFirstGridline && m === 0)) {
-      const x = originX + (MONTH_START_DAYS[m] / 365) * yearWidth;
+      const x = originX + (MONTH_START_DAYS[m] / CALENDAR_DAYS) * yearWidth;
       ctx.strokeStyle = opts.gridColor;
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -141,20 +133,14 @@ function drawMonthTicks(
       ctx.lineTo(x, top + height);
       ctx.stroke();
     }
-    const xMid = originX + ((MONTH_START_DAYS[m] + MONTH_DAYS[m] / 2) / 365) * yearWidth;
+    const xMid =
+      originX + ((MONTH_START_DAYS[m] + MONTH_DAYS[m] / 2) / CALENDAR_DAYS) * yearWidth;
     ctx.fillStyle = opts.labelColor;
     ctx.fillText(MONTH_LETTERS[m], xMid, labelY);
   }
 }
 
-/**
- * Draw the shared multi-year x-axis strip used by the year heatmap and the climate chart:
- * a per-year separator line, month gridlines/letters (only when few enough years fit), and
- * a "Year N" caption per orbit. The two charts differ only in their separator/gridline
- * colours and whether January's gridline is suppressed, so those are options; the geometry
- * (each year is 365 columns wide) is identical. `bottomY` is the axis baseline (h minus the
- * bottom padding). A null separator colour skips that year's separator line.
- */
+/** Draw the shared multi-year axis strip for the year and climate charts. */
 export function drawYearStrip(
   ctx: CanvasRenderingContext2D,
   originX: number,
@@ -170,12 +156,12 @@ export function drawYearStrip(
     skipFirstGridline: boolean;
   },
 ): void {
-  const spanDays = years * 365;
+  const spanDays = years * CALENDAR_DAYS;
   const showMonths = years <= 2;
-  const yearWidth = (365 / spanDays) * plotW;
+  const yearWidth = (CALENDAR_DAYS / spanDays) * plotW;
   ctx.textBaseline = 'alphabetic';
   for (let y = 0; y < years; y++) {
-    const xSep = originX + ((y * 365) / spanDays) * plotW;
+    const xSep = originX + ((y * CALENDAR_DAYS) / spanDays) * plotW;
     const sep = opts.separatorColor(y);
     if (sep) {
       ctx.strokeStyle = sep;
@@ -193,7 +179,7 @@ export function drawYearStrip(
       });
     }
     if (years > 1) {
-      const xYearMid = originX + ((y * 365 + 182) / spanDays) * plotW;
+      const xYearMid = originX + ((y * CALENDAR_DAYS + 182) / spanDays) * plotW;
       ctx.fillStyle = 'rgba(160,176,205,0.7)';
       ctx.textAlign = 'center';
       ctx.fillText(`Year ${y + 1}`, xYearMid, bottomY + (showMonths ? 24 : 14));

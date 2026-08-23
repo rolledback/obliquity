@@ -1,12 +1,4 @@
-// Showcase formula sets for "formula mode". Each one drives the axial tilt and the
-// axis lean direction (both in degrees) from the orbital position, chosen to look wild
-// yet stay perfectly smooth. They never touch the spin, so the day length stays normal.
-//
-// Variables a formula may use: phase (0..1 around the Sun this orbit), lon (0..360
-// degrees), year / t (years elapsed, accumulating across orbits), orbit (whole orbits
-// done), day (1..365). Handy smooth helpers: wave(x) = sin(2*pi*x), cwave(x) =
-// cos(2*pi*x), sind/cosd take degrees, sat clamps to 0..1, smooth/lerp blend.
-
+/** A named pair of tilt and lean formulas for the formula picker. */
 export interface FormulaExample {
   name: string;
   blurb: string;
@@ -14,6 +6,7 @@ export interface FormulaExample {
   leanFormula: string;
 }
 
+/** Formula-mode showcases shared with the scenario picker. */
 export const FORMULA_EXAMPLES: FormulaExample[] = [
   {
     name: 'Analemma Dance',
