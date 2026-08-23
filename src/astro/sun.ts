@@ -1,6 +1,3 @@
-// Horizontal (alt/az) Sun coordinates for an observer at a given latitude/longitude,
-// plus the local east-north-up basis in the earth-fixed frame.
-
 import { axisParamsAt, earthMatrix, sunDirEcliptic } from './orientation';
 import { sunLongitudeDeg } from './config';
 import type { RotationConfig } from './config';
@@ -13,10 +10,7 @@ interface LocalBasis {
   east: V3; // toward increasing longitude along the surface
 }
 
-/**
- * Local east-north-up basis vectors in the earth-fixed frame for a location.
- * Latitude/longitude in degrees; longitude measured eastward from the prime meridian.
- */
+/** Earth-fixed east-north-up basis for geographic coordinates in degrees. */
 function localBasis(latDeg: number, lonDeg: number): LocalBasis {
   const phi = latDeg * DEG;
   const lam = lonDeg * DEG;
@@ -36,32 +30,35 @@ export interface AltAz {
   azDeg: number; // compass azimuth: 0 = North, 90 = East, 180 = South, 270 = West
 }
 
-/**
- * Sun altitude and azimuth, given the Earth orientation matrix M (earth-fixed ->
- * ecliptic), the Sun direction in the ecliptic frame, and the observer location.
- */
+/** Altitude and azimuth of an ecliptic-frame direction for an observer. */
+export function directionAltAz(
+  M: Mat3,
+  dirEcl: V3,
+  latDeg: number,
+  lonDeg: number,
+): AltAz {
+  // The inverse of orthonormal M is its transpose.
+  const fixed = matVec(transpose(M), dirEcl);
+  const { up, north, east } = localBasis(latDeg, lonDeg);
+  const sUp = dot(fixed, up);
+  const sNorth = dot(fixed, north);
+  const sEast = dot(fixed, east);
+  const altDeg = Math.asin(clamp(sUp, -1, 1)) * RAD;
+  const azDeg = posMod(Math.atan2(sEast, sNorth) * RAD, 360);
+  return { altDeg, azDeg };
+}
+
+/** Sun altitude and azimuth from an orientation matrix and ecliptic direction. */
 export function sunAltAz(
   M: Mat3,
   sunDirEcl: V3,
   latDeg: number,
   lonDeg: number,
 ): AltAz {
-  // Rotate the Sun direction into the earth-fixed frame (M is orthonormal).
-  const sunFixed = matVec(transpose(M), sunDirEcl);
-  const { up, north, east } = localBasis(latDeg, lonDeg);
-  const sUp = dot(sunFixed, up);
-  const sNorth = dot(sunFixed, north);
-  const sEast = dot(sunFixed, east);
-  const altDeg = Math.asin(clamp(sUp, -1, 1)) * RAD;
-  const azDeg = posMod(Math.atan2(sEast, sNorth) * RAD, 360);
-  return { altDeg, azDeg };
+  return directionAltAz(M, sunDirEcl, latDeg, lonDeg);
 }
 
-/**
- * Sun alt/az for a single instant defined by config, day-of-year, spin angle and
- * location. Used by the day-path sampler and for the live 3D readout. `axisPhaseLonDeg`
- * optionally supplies the accumulated-across-orbits longitude for a precessing axis.
- */
+/** Sun alt/az at a date and spin, optionally using an unwrapped axis phase. */
 export function sunAltAzAt(
   config: RotationConfig,
   dayOfYear: number,

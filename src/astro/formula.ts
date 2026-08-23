@@ -1,13 +1,3 @@
-// A tiny, safe math-expression compiler for "formula mode", where the user drives the
-// rotation parameters with their own expressions of the orbital position.
-//
-// It is deliberately NOT JavaScript: the source is tokenised and parsed by a small
-// recursive-descent parser into a tree of closures, so nothing the user types can run
-// as code (no eval, no Function, no property access). Unknown names or malformed input
-// produce a parse error string rather than throwing, and every compiled formula is
-// guarded so it always returns a finite number (NaN or Infinity become 0). That makes
-// it safe to evaluate every animation frame and every chart pixel.
-
 import { posMod } from './vec';
 import { dayOfYearFromLonFraction } from './calendar';
 
@@ -17,12 +7,7 @@ export interface FormulaVars {
   phase: number;
   /** The Sun's ecliptic longitude this orbit in degrees, 0..360. */
   lon: number;
-  /**
-   * Elapsed time in years, accumulating across orbits, so a formula that uses it keeps
-   * evolving lap after lap instead of repeating every year (a `phase`-only formula is
-   * identical every orbit). With rational coefficients the whole thing still has a finite,
-   * usually enormous, repeat period; an irrational coefficient makes it truly never repeat.
-   */
+  /** Unwrapped orbital phase in years, with 0 at the March equinox. */
   year: number;
   /** Alias of `year`: the overall progress of the simulation. */
   t: number;
@@ -30,8 +15,13 @@ export interface FormulaVars {
   orbit: number;
   /** Day of the year, 1..~365. */
   day: number;
+  /** Observer latitude in degrees, positive north. */
+  lat: number;
+  /** The longitude you are standing at, in degrees, positive east. */
+  site: number;
 }
 
+/** A compiled evaluator, its parse status, and referenced variables. */
 export interface CompiledFormula {
   source: string;
   /** Evaluates the formula; always returns a finite number (0 if the result is not). */
@@ -42,31 +32,31 @@ export interface CompiledFormula {
   refs: ReadonlySet<keyof FormulaVars>;
 }
 
-/** The variable names a formula may use. */
 const FORMULA_VARS: readonly (keyof FormulaVars)[] = [
-  'phase', 'lon', 'year', 't', 'orbit', 'day',
+  'phase', 'lon', 'year', 't', 'orbit', 'day', 'lat', 'site',
 ];
+
+/** Variables that make formula results and their cache keys location-dependent. */
+export const SITE_VARS: readonly (keyof FormulaVars)[] = ['lat', 'site'];
 
 type Fn = (vars: FormulaVars) => number;
 
 const DEG = Math.PI / 180;
 const frac = (x: number) => x - Math.floor(x);
 
-// Function library. Each entry is [arity, impl]; arity -1 means variadic (1 or more).
+// An arity of -1 means one or more arguments.
 const FUNCTIONS: Record<string, [number, (a: number[]) => number]> = {
-  // Trigonometry in radians.
   sin: [1, (a) => Math.sin(a[0])],
   cos: [1, (a) => Math.cos(a[0])],
   tan: [1, (a) => Math.tan(a[0])],
-  asin: [1, (a) => Math.asin(a[0])],
-  acos: [1, (a) => Math.acos(a[0])],
+  // Clamp floating-point overshoot at the domain boundary instead of returning NaN.
+  asin: [1, (a) => Math.asin(Math.min(1, Math.max(-1, a[0])))],
+  acos: [1, (a) => Math.acos(Math.min(1, Math.max(-1, a[0])))],
   atan: [1, (a) => Math.atan(a[0])],
   atan2: [2, (a) => Math.atan2(a[0], a[1])],
-  // Trigonometry in degrees (handy since the parameters are in degrees).
   sind: [1, (a) => Math.sin(a[0] * DEG)],
   cosd: [1, (a) => Math.cos(a[0] * DEG)],
   tand: [1, (a) => Math.tan(a[0] * DEG)],
-  // Scalar maths.
   abs: [1, (a) => Math.abs(a[0])],
   sign: [1, (a) => Math.sign(a[0])],
   sqrt: [1, (a) => Math.sqrt(Math.max(0, a[0]))],
@@ -82,7 +72,6 @@ const FUNCTIONS: Record<string, [number, (a: number[]) => number]> = {
   mod: [2, (a) => ((a[0] % a[1]) + a[1]) % a[1]],
   min: [-1, (a) => Math.min(...a)],
   max: [-1, (a) => Math.max(...a)],
-  // Shaping helpers.
   clamp: [3, (a) => Math.min(Math.max(a[0], a[1]), a[2])],
   sat: [1, (a) => Math.min(Math.max(a[0], 0), 1)],
   lerp: [3, (a) => a[0] + (a[1] - a[0]) * a[2]],
@@ -90,11 +79,9 @@ const FUNCTIONS: Record<string, [number, (a: number[]) => number]> = {
   step: [2, (a) => (a[1] < a[0] ? 0 : 1)],
   smooth: [3, smoothstep3],
   smoothstep: [3, smoothstep3],
-  // Periodic shaping helpers over a period of 1.
-  wave: [1, (a) => Math.sin(2 * Math.PI * a[0])], // smooth sine, period 1
-  cwave: [1, (a) => Math.cos(2 * Math.PI * a[0])], // smooth cosine, period 1 (starts at 1)
-  tri: [1, (a) => 4 * Math.abs(frac(a[0]) - 0.5) - 1], // triangle wave, period 1
-  // Choice (introduces a jump; use sparingly).
+  wave: [1, (a) => Math.sin(2 * Math.PI * a[0])],
+  cwave: [1, (a) => Math.cos(2 * Math.PI * a[0])],
+  tri: [1, (a) => 4 * Math.abs(frac(a[0]) - 0.5) - 1],
   if: [3, (a) => (a[0] > 0 ? a[1] : a[2])],
 };
 
@@ -109,13 +96,16 @@ function smoothstep3(a: number[]): number {
   return t * t * (3 - 2 * t);
 }
 
-// ---- Tokenizer -------------------------------------------------------------
-
 type TokenType = 'num' | 'ident' | 'op' | 'lparen' | 'rparen' | 'comma';
 interface Token {
   type: TokenType;
   value: string;
   pos: number;
+}
+
+/** Own-property test, so an allowlist cannot be satisfied by Object.prototype. */
+function ownProperty(table: object, name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(table, name);
 }
 
 class ParseError extends Error {}
@@ -135,7 +125,6 @@ function tokenize(src: string): Token[] {
     if (isDigit(c) || (c === '.' && isDigit(src[i + 1]))) {
       let j = i + 1;
       while (j < src.length && (isDigit(src[j]) || src[j] === '.')) j++;
-      // Optional exponent, e.g. 1.5e-3.
       if (src[j] === 'e' || src[j] === 'E') {
         j++;
         if (src[j] === '+' || src[j] === '-') j++;
@@ -179,11 +168,9 @@ function tokenize(src: string): Token[] {
   return tokens;
 }
 
-// ---- Parser (recursive descent) --------------------------------------------
-//
-// Precedence, lowest to highest: + -  |  * / %  |  unary - +  |  ^ (right assoc).
-
-const MAX_SOURCE_LENGTH = 1000;
+/** Maximum source length, bounding parsing work on untrusted input. */
+export const MAX_SOURCE_LENGTH = 1000;
+// Bound recursive groups and arguments so parsing cannot exhaust the stack.
 const MAX_DEPTH = 64;
 
 class Parser {
@@ -211,8 +198,6 @@ class Parser {
   }
 
   private parseAddSub(): Fn {
-    // parseAddSub is re-entered for every parenthesised group and function argument,
-    // so bounding its recursion bounds the overall nesting depth.
     if (++this.depth > MAX_DEPTH) throw new ParseError('Formula nested too deeply');
     try {
       return this.parseAddSubInner();
@@ -268,7 +253,7 @@ class Parser {
     const t = this.peek();
     if (t?.type === 'op' && t.value === '^') {
       this.next();
-      const exp = this.parseUnary(); // right-associative, allows 2^-3
+      const exp = this.parseUnary();
       return (v) => Math.pow(base(v), exp(v));
     }
     return base;
@@ -287,7 +272,6 @@ class Parser {
       return inner;
     }
     if (t.type === 'ident') {
-      // Function call?
       if (this.peek()?.type === 'lparen') {
         this.next();
         const args: Fn[] = [];
@@ -302,12 +286,13 @@ class Parser {
         if (close.type !== 'rparen') throw new ParseError('Expected ")"');
         return this.makeCall(t.value, args);
       }
-      // Constant?
-      if (t.value in CONSTANTS) {
+      // An OWN property, not `in`: `in` walks the prototype chain, so constructor,
+      // toString, __proto__ and valueOf all passed the allowlist, compiled with no error
+      // and then silently evaluated to 0. The validator told the user the formula was fine.
+      if (ownProperty(CONSTANTS, t.value)) {
         const value = CONSTANTS[t.value];
         return () => value;
       }
-      // Variable?
       if ((FORMULA_VARS as readonly string[]).includes(t.value)) {
         const name = t.value as keyof FormulaVars;
         return (v) => v[name];
@@ -318,7 +303,7 @@ class Parser {
   }
 
   private makeCall(name: string, args: Fn[]): Fn {
-    const entry = FUNCTIONS[name];
+    const entry = ownProperty(FUNCTIONS, name) ? FUNCTIONS[name] : undefined;
     if (!entry) throw new ParseError(`Unknown function "${name}"`);
     const [arity, impl] = entry;
     if (arity === -1) {
@@ -329,25 +314,16 @@ class Parser {
     return (v) => {
       const values = args.map((a) => a(v));
       const y = impl(values);
-      // Localize the finite guard so one out-of-domain call (pow(-1, 0.5), mod by 0,
-      // tan at a pole) collapses to 0 without killing an otherwise valid formula.
+      // Keep one invalid call from invalidating the surrounding expression.
       return Number.isFinite(y) ? y : 0;
     };
   }
 }
 
-// ---- Public API ------------------------------------------------------------
-
 const cache = new Map<string, CompiledFormula>();
 
-/**
- * Compile a formula string into a guarded evaluator. Results are memoised by source so
- * this is cheap to call every frame. A blank formula evaluates to 0.
- */
 const EMPTY_REFS: ReadonlySet<keyof FormulaVars> = new Set();
 
-// The variable names a token stream reads, used to tell periodic formulas (phase/lon/day)
-// from secular ones (year/t/orbit) that evolve across orbits.
 function collectRefs(tokens: Token[]): ReadonlySet<keyof FormulaVars> {
   const refs = new Set<keyof FormulaVars>();
   for (const t of tokens) {
@@ -358,6 +334,7 @@ function collectRefs(tokens: Token[]): ReadonlySet<keyof FormulaVars> {
   return refs;
 }
 
+/** Compile a formula into a finite evaluator, memoized by source. Blank formulas return 0. */
 export function compileFormula(source: string): CompiledFormula {
   const cached = cache.get(source);
   if (cached) return cached;
@@ -373,7 +350,6 @@ export function compileFormula(source: string): CompiledFormula {
       const tokens = tokenize(source);
       const refs = collectRefs(tokens);
       const raw = new Parser(tokens).parse();
-      // Guard so the simulation never sees NaN or Infinity from a wild formula.
       const fn: Fn = (v) => {
         const y = raw(v);
         return Number.isFinite(y) ? y : 0;
@@ -397,19 +373,15 @@ export function formulaIsSecular(source: string): boolean {
 }
 
 /**
- * Build the formula variables from the two longitudes the orientation pipeline already
- * carries: `sunLonDeg` is the Sun's longitude this orbit, and `axisPhaseLonDeg` is the
- * longitude accumulated across orbits. Everything else is derived by wrapping and
- * division, which is exactly why a formula evaluated during the cycle-mean RA sweep
- * (where the accumulated phase equals the within-orbit longitude) agrees with a formula
- * evaluated at a real instant: both fold through the same mod-360 periodicity.
- *
- * `phase`, `lon`, and `day` are wrapped to be non-negative for any longitude. `year`/`t`
- * follow the (signed, unwrapped) accumulated phase, so within the first orbit before the
- * March-equinox epoch they can be slightly negative; real callers pass accumulated
- * longitudes that make this a non-issue, and the smooth examples avoid relying on it.
+ * Build variables from the within-orbit Sun longitude and unwrapped axis phase.
+ * Periodic values wrap non-negative, while `year` and `t` remain signed and unwrapped.
  */
-export function formulaVars(sunLonDeg: number, axisPhaseLonDeg: number): FormulaVars {
+export function formulaVars(
+  sunLonDeg: number,
+  axisPhaseLonDeg: number,
+  siteLatDeg = 0,
+  siteLonDeg = 0,
+): FormulaVars {
   const lon = posMod(sunLonDeg, 360);
   const year = axisPhaseLonDeg / 360;
   const day = dayOfYearFromLonFraction(lon / 360);
@@ -418,8 +390,10 @@ export function formulaVars(sunLonDeg: number, axisPhaseLonDeg: number): Formula
     lon,
     year,
     t: year,
-    orbit: Math.floor(year),
+    // Do not floor `year`: before the March epoch it is negative during the first orbit.
+    orbit: Math.round((axisPhaseLonDeg - sunLonDeg) / 360),
     day,
+    lat: siteLatDeg,
+    site: siteLonDeg,
   };
 }
-

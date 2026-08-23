@@ -1,11 +1,3 @@
-// Sample the Sun's path across the sky over one day for a location and date, and
-// derive summary statistics.
-//
-// The orbital position (and therefore the Sun's declination) is held fixed for the
-// day, which is the standard assumption for a sun-path diagram. The rotation speed
-// does not change the shape of the path, only how many hours it takes to trace it;
-// that is captured by `solarDayHours` feeding into the daylight-hours figure.
-
 import { sunAltAz } from './sun';
 import {
   axisParamsAt,
@@ -19,8 +11,10 @@ import {
   sunriseHourAngleRad,
 } from './orientation';
 import { compileFormula, formulaVars } from './formula';
-import { YEAR_HOURS, axisConfigKey, periodOrbits, sunLongitudeDeg } from './config';
+import { YEAR_HOURS, accumulatedLonDeg, axisConfigKey, periodOrbits, sunLongitudeDeg } from './config';
 import type { RotationConfig } from './config';
+import type { AxisParams } from './orientation';
+import type { Mat3 } from './vec';
 import { DEG, RAD, clamp, wrapSignedDeg } from './vec';
 
 export interface DaySample {
@@ -48,15 +42,11 @@ export interface DayPath {
   stats: DayStats;
 }
 
-const TINY_RATE = 1e-6; // deg/hr below which spin and orbit are effectively locked
+const TINY_RATE = 1e-6; // deg/hour below which spin and mean Sun RA are treated as locked
 
 /**
- * The spin-speed multiplier from the spin formula at an orbital position; 1 means the
- * plain base period. The Sun-path shape is set by the axis, so a varying spin only
- * changes how long a day lasts and which way the Sun appears to cross the sky; sampling
- * the multiplier once per day (the orbital position barely moves within a day) keeps that
- * exact. The trivial "1" formula short-circuits with no compile cost, and omitting the
- * position also reports the base spin (multiplier 1), so a position-free query is honest.
+ * Spin-formula multiplier at an orbital position.
+ * Missing position and the empty or `1` formulas return the base multiplier 1.
  */
 export function spinMultiplierAt(
   config: RotationConfig,
@@ -65,7 +55,27 @@ export function spinMultiplierAt(
 ): number {
   const src = config.spinFormula;
   if (src === '' || src === '1' || sunLonDeg === undefined) return 1;
-  return compileFormula(src).fn(formulaVars(sunLonDeg, axisPhaseLonDeg ?? sunLonDeg));
+  return compileFormula(src).fn(
+    formulaVars(sunLonDeg, axisPhaseLonDeg ?? sunLonDeg, config.siteLatDeg, config.siteLonDeg),
+  );
+}
+
+/** Earth orientation at a date and local apparent solar time. */
+export function earthMatrixAtLocalTime(
+  config: RotationConfig,
+  orbit: number,
+  dayOfYear: number,
+  lonDeg: number,
+  timeOfDay: number,
+): Mat3 {
+  const accum = accumulatedLonDeg(orbit, dayOfYear);
+  const axis = axisParamsAt(config, sunLongitudeDeg(dayOfYear), accum);
+  return earthMatrix(
+    axis.obliquityDeg,
+    axis.axisLongitudeDeg,
+    // Reuse the formula-derived axis.
+    spinAtLocalTime(config, dayOfYear, lonDeg, timeOfDay, accum, axis),
+  );
 }
 
 /** Signed spin rate relative to the stars (deg/hour); negative for retrograde. */
@@ -76,41 +86,24 @@ export function spinRateDegPerHour(
 ): number {
   const sign = config.prograde ? 1 : -1;
   const base = (sign * 360) / config.rotationPeriodHours;
-  // Clamp the multiplier so an absurd formula value cannot overflow the rate to Infinity
-  // (which would freeze the clock instead of spinning fast). 1e4x normal is already a blur.
+  // A 1e4 multiplier bounds overflow while already exceeding visible spin rates.
   const mult = spinMultiplierAt(config, sunLonDeg, axisPhaseLonDeg);
   const clamped = Math.max(-1e4, Math.min(1e4, mult));
   return base * clamped;
 }
 
-// The mean right-ascension winding is integrated once per distinct axis configuration
-// and memoised, since solarDayHours runs on every animation frame.
+// Memoized because solarDayHours runs every animation frame.
 const raRateCache = new Map<string, number>();
-const RA_WINDING_STEPS = 2048;
+/**
+ * Prime sample count avoids exact power-of-two resonance.
+ * Frequencies above roughly 1000 cycles per orbit remain undersampled.
+ */
+const RA_WINDING_STEPS = 2039;
 
 /**
- * Mean rate (deg/hour) at which the Sun's right ascension advances, averaged over the
- * configuration's full repeat cycle. It is the net winding of the Sun's right ascension
- * across the whole cycle divided by the cycle length. A fixed axis winds it once per
- * year (the usual sidereal-versus-solar gap); an axis that tracks the Sun pins it to
- * zero; a precessing axis shifts it by its turns per year; an obliquity past 90 degrees
- * reverses it; and an obliquity that oscillates across 90 degrees through the year
- * partly cancels it. Integrating the actual path captures every case uniformly.
- *
- * The integration spans the whole cycle, not a single orbit, because the right
- * ascension's winding over one orbit of a non-whole-number precession depends on which
- * arc that orbit covers; only the cycle average gives a mean solar day that keeps the
- * rendered spin matching the set sidereal rate over the long run.
- *
- * Formula mode reports a period of one orbit, so a secular formula (one reading year, t,
- * or orbit) is integrated over its first orbit only. That is exact for periodic phase/lon
- * formulas; for a secular formula whose lean drifts or whose tilt crosses 90 degrees over
- * the years, the true winding changes from orbit to orbit, so local solar noon can drift
- * slowly across many simulated years. The result stays finite and smooth. The built-in
- * Maelstrom example is mildly secular (its lean drifts and its tilt crosses 90), giving a
- * cosmetic clock drift of roughly a quarter solar-hour per simulated year; the Sun's
- * actual position for any given day and spin stays exact. This is a known limit of the
- * single-clock model for wildly secular hand-written formulas.
+ * Mean Sun right-ascension rate over the configured axis-cycle span.
+ * Secular formulas are integrated only over orbit 0, so later-orbit rates can differ
+ * and shift the local-noon anchor.
  */
 export function meanSunRaRateDegPerHour(config: RotationConfig): number {
   const key = axisConfigKey(config);
@@ -122,11 +115,11 @@ export function meanSunRaRateDegPerHour(config: RotationConfig): number {
   let prevRa = 0;
   let totalDeg = 0;
   for (let i = 0; i <= steps; i++) {
-    const lon = (i / steps) * period * 360; // the full cycle, continuous
+    const lon = (i / steps) * period * 360;
     const { obliquityDeg, axisLongitudeDeg } = axisParamsAt(config, lon);
     const ra = raSunDeg(obliquityDeg, axisLongitudeDeg, lon);
     if (i > 0) {
-      totalDeg += wrapSignedDeg(ra - prevRa); // shortest step, so the sum unwraps
+      totalDeg += wrapSignedDeg(ra - prevRa);
     }
     prevRa = ra;
   }
@@ -137,11 +130,8 @@ export function meanSunRaRateDegPerHour(config: RotationConfig): number {
 }
 
 /**
- * Length of the solar day (Sun returning to the same hour angle), in hours. Emerges
- * from the spin beating against the Sun's mean right ascension rate. Infinite when the
- * spin exactly matches that rate (a tidally-locked configuration). With a spin formula
- * the rate varies through the year, so pass the orbital position for that day; omitting
- * it assumes the base (multiplier 1) spin.
+ * Hours for the Sun to return to one hour angle.
+ * Returns Infinity when spin and mean Sun RA rates differ by less than TINY_RATE.
  */
 export function solarDayHours(
   config: RotationConfig,
@@ -153,12 +143,9 @@ export function solarDayHours(
 }
 
 /**
- * Sign of the Sun's apparent daily motion: +1 when it rises in the east like a normal
- * prograde day, -1 when it rises in the west. This follows the spin measured against
- * the Sun's mean RA rate, not the raw spin, so a planet spinning prograde but slower
- * than its orbit sees the Sun drift backwards. For every ordinary day length the spin
- * dominates, so this matches the prograde flag; a spin formula that dips below the orbit
- * rate (or reverses) flips it, so pass the orbital position for the day in question.
+ * Sampling direction of the Sun's apparent daily motion.
+ * Near lock it uses the configured prograde flag; otherwise it follows spin minus
+ * the mean Sun RA rate.
  */
 export function apparentSolarSpinSign(
   config: RotationConfig,
@@ -171,25 +158,38 @@ export function apparentSolarSpinSign(
 }
 
 /**
- * Whether the apparent spin direction flips somewhere over the next few orbits, i.e. a
- * spin formula carries the planet through a standstill and reverses. The reversal itself
- * is physically fine and the per-day sky charts stay correct, but the continuous orbit-view
- * spin jumps at the instant of reversal (local solar time is singular when the spin is
- * zero), so the UI warns about it. A constant or non-zero-crossing spin never flips and
- * returns false. This is a dense-sampling heuristic over the first few orbits (a needle-thin
- * or far-future reversal between samples can be missed), which is fine for a soft warning.
+ * Whether sampled apparent solar motion changes direction in the first four orbits.
+ * This heuristic can miss a narrow or later reversal and is used only for a warning.
  */
 export function spinReverses(config: RotationConfig): boolean {
-  const orbits = 4; // covers periodic spins and near-term secular (year/t) ones
+  const orbits = 4;
   const N = 360 * orbits;
   let prevSign = 0;
   for (let i = 0; i <= N; i++) {
-    const phase = (i / N) * orbits * 360; // accumulated longitude so year/t evolve
+    const phase = (i / N) * orbits * 360;
     const sign = apparentSolarSpinSign(config, phase, phase);
     if (i > 0 && sign !== prevSign) return true;
     prevSign = sign;
   }
   return false;
+}
+
+/**
+ * Spin angle at local apparent solar time, with 12:00 on the observer's meridian.
+ * `axis` may supply already-computed axis parameters.
+ */
+export function spinAtLocalTime(
+  config: RotationConfig,
+  dayOfYear: number,
+  lonDeg: number,
+  timeOfDay: number,
+  axisPhaseLonDeg?: number,
+  /** The axis at this instant, when the caller has already worked it out. */
+  axis?: AxisParams,
+): number {
+  const noon = noonSpinDeg(config, dayOfYear, lonDeg, axisPhaseLonDeg, axis);
+  const sign = apparentSolarSpinSign(config, sunLongitudeDeg(dayOfYear), axisPhaseLonDeg);
+  return noon + sign * 15 * (timeOfDay - 12);
 }
 
 export function computeDayPath(
@@ -209,10 +209,9 @@ export function computeDayPath(
   const dec = decDeg * DEG;
   const dayLen = solarDayHours(config, sunLon, axisPhase);
 
-  // Upper and lower culmination altitudes (exact).
   const { upperDeg: peakAltDeg, lowerDeg: minAltDeg } = culminationAltitudesDeg(lat, dec);
 
-  // Daylight fraction from the sunrise hour angle: 0 = polar night, PI = polar day.
+  // H0 ranges from 0 for polar night to PI for polar day.
   const H0 = sunriseHourAngleRad(lat, dec);
   const atPole = Math.abs(Math.cos(lat)) < 1e-9;
   const { fraction: daylightFraction, polar } = classifyDaylight(H0);
@@ -220,15 +219,14 @@ export function computeDayPath(
     polar === 'day' ? 'polar-day' : polar === 'night' ? 'polar-night' : 'normal';
   if (!Number.isFinite(dayLen)) condition = 'no-cycle';
 
-  // Sunrise/sunset azimuth (exact). cos(Az) = sin(dec)/cos(lat) at the horizon.
+  // At the horizon, cos(azimuth) = sin(dec) / cos(lat).
   let sunriseAzDeg: number | null = null;
   let sunsetAzDeg: number | null = null;
   const solarSign = apparentSolarSpinSign(config, sunLon, axisPhase);
   if (condition === 'normal' || condition === 'no-cycle') {
     if (!atPole) {
       const az0 = Math.acos(clamp(Math.sin(dec) / Math.cos(lat), -1, 1)) * RAD;
-      // Sun rising in the east (azimuth 0..180) when its apparent motion is prograde;
-      // reversed when it appears to move backwards across the sky.
+      // Reverse east and west for retrograde apparent motion.
       sunriseAzDeg = solarSign > 0 ? az0 : 360 - az0;
       sunsetAzDeg = solarSign > 0 ? 360 - az0 : az0;
     }
@@ -236,9 +234,7 @@ export function computeDayPath(
 
   const daylightHours = Number.isFinite(dayLen) ? daylightFraction * dayLen : daylightFraction > 0 ? Infinity : 0;
 
-  // Sample the drawn path. Sweep one full rotation in chronological order, phased
-  // so the sample fraction equals local solar time / 24: t=0 is local midnight,
-  // t=0.5 is local solar noon. The Sun direction is held fixed for the day.
+  // Sweep chronologically from local midnight, with local noon at t=0.5.
   const dir = solarSign;
   const noonSpin = noonSpinDeg(config, dayOfYear, lonDeg, axisPhase);
   const M0 = sunDirEcliptic(sunLon);

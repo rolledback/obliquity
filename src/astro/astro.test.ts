@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   REALISTIC,
   cloneConfig,
@@ -13,19 +13,19 @@ import {
 import { FORMULA_EXAMPLES } from '../formulaExamples';
 import {
   axisParamsAt,
+  classifyDaylight,
   culminationAltitudesDeg,
   declinationForDay,
-  earthMatrix,
   maxPoleStep,
   noonSpinDeg,
   northPole,
   sunDeclinationDeg,
-  sunDirEcliptic,
   sunriseHourAngleRad,
 } from './orientation';
-import { sunAltAz, sunAltAzAt } from './sun';
+import { dayOfYearFromLonFraction } from './calendar';
+import { sunAltAzAt } from './sun';
 import { computeDayPath, apparentSolarSpinSign, meanSunRaRateDegPerHour, solarDayHours, spinMultiplierAt, spinRateDegPerHour, spinReverses } from './daypath';
-import { dailyInsolation, seasonCycle, warmthAt } from './season';
+import { dailyInsolation, seasonCycle, seasonSpan, warmthAt } from './season';
 import { dot } from './vec';
 
 const close = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
@@ -51,7 +51,6 @@ describe('north pole vector', () => {
   it('is a unit vector tilted by the obliquity from the ecliptic pole', () => {
     const n = northPole(23.4397, 90);
     expect(close(dot(n, n), 1, 1e-9)).toBe(true);
-    // angle from ecliptic north (Z) equals the obliquity
     expect(close(Math.acos(n[2]) * (180 / Math.PI), 23.4397, 1e-4)).toBe(true);
   });
 });
@@ -102,7 +101,6 @@ describe('retrograde rotation', () => {
     const retro = cloneConfig(REALISTIC);
     retro.prograde = false;
     const { stats } = computeDayPath(retro, 79, 40, 0);
-    // sunrise now on the western side of the sky
     expect(Math.abs((stats.sunriseAzDeg as number) - 270) < 1).toBe(true);
   });
 });
@@ -135,11 +133,9 @@ describe('axis mode: always lean toward Sun', () => {
 });
 
 describe('mean solar day across axis modes', () => {
-  // Verified against a brute-force noon-crossing count over a full year. An axis that
-  // tracks the Sun (or precesses) shifts the Sun's mean right ascension rate, so the
-  // mean solar day is no longer the fixed-axis 24 h.
+  // Axis motion changes the mean RA rate and therefore the solar day.
   const make = (mut: (c: ReturnType<typeof defaultCustomConfig>) => void) => {
-    const c = defaultCustomConfig(); // sidereal-period, prograde base
+    const c = defaultCustomConfig();
     mut(c);
     return c;
   };
@@ -163,11 +159,7 @@ describe('mean solar day across axis modes', () => {
 });
 
 describe('mean Sun RA rate matches the actual yearly winding', () => {
-  // The mean right-ascension rate must equal the net winding of the noon spin over a
-  // full year (it is what the animation clock beats against). This is the strongest
-  // self-consistency check on solarDayHours, and it covers the case a per-mode closed
-  // form gets wrong: an obliquity that oscillates across 90 degrees, whose forward and
-  // backward winding cancel so the Sun's RA has no net annual drift.
+  // Net noon-spin winding must match the RA rate used by the clock.
   const annualNoonSpinDriftDeg = (cfg: ReturnType<typeof defaultCustomConfig>) => {
     const steps = 4000;
     let prev = noonSpinDeg(cfg, 1, 0);
@@ -205,14 +197,12 @@ describe('mean Sun RA rate matches the actual yearly winding', () => {
 });
 
 describe('precession axis stays continuous across the equinox seam', () => {
-  // A non-integer precession rate is not periodic with the year, but the simulated
-  // year must not snap mid-year: declination and the noon spin should be continuous
-  // through the equinox (day 79), where the ecliptic longitude passes through zero.
+  // Fractional precession must remain continuous through longitude zero.
   it('declination does not jump for fractional turns/yr', () => {
     const cfg = defaultCustomConfig();
     cfg.axisMode = 'precession';
     cfg.precessionTurnsPerYear = 3.5;
-    cfg.axisLongitudeDeg = 0; // base where a wrapped longitude would flip the sign
+    cfg.axisLongitudeDeg = 0;
     const before = declinationForDay(cfg, 78.9);
     const after = declinationForDay(cfg, 79.1);
     expect(Math.abs(before - after) < 1).toBe(true);
@@ -223,26 +213,49 @@ describe('precession axis stays continuous across the equinox seam', () => {
     cfg.precessionTurnsPerYear = 2.2;
     const a = noonSpinDeg(cfg, 78.9, 30);
     const b = noonSpinDeg(cfg, 79.1, 30);
-    const delta = ((a - b + 540) % 360) - 180; // shortest angular gap
+    const delta = ((a - b + 540) % 360) - 180;
     expect(Math.abs(delta) < 2).toBe(true);
   });
 });
 
-describe('alt/az direct vs day-path consistency', () => {
-  it('sunAltAzAt matches a direct matrix computation', () => {
-    const sunLon = sunLongitudeDeg(120);
-    const { obliquityDeg, axisLongitudeDeg } = axisParamsAt(REALISTIC, sunLon);
-    const M = earthMatrix(obliquityDeg, axisLongitudeDeg, 137);
-    const direct = sunAltAz(M, sunDirEcliptic(sunLon), 33, 18);
-    const helper = sunAltAzAt(REALISTIC, 120, 137, 33, 18);
-    expect(close(direct.altDeg, helper.altDeg, 1e-9)).toBe(true);
-    expect(close(direct.azDeg, helper.azDeg, 1e-9)).toBe(true);
+describe('where the Sun actually appears', () => {
+  // Against textbook values rather than against the code's own helper. The old version
+  // compared sunAltAzAt with sunAltAz, which it calls, so forcing sunAltAz to return
+  // {0, 0} left it passing. Azimuth in particular was pinned by nothing at all: it could
+  // be hard-wired to zero and the whole file stayed green.
+  // Convention here: azimuth 0 is north, 90 east, 180 south.
+  const noon = (day: number, lat: number) =>
+    sunAltAzAt(REALISTIC, day, noonSpinDeg(REALISTIC, day, 0), lat, 0);
+
+  it('puts the equinox noon Sun due south in the north and due north in the south', () => {
+    expect(noon(79, 45).altDeg).toBeCloseTo(45, 6);
+    expect(noon(79, 45).azDeg).toBeCloseTo(180, 6);
+    expect(noon(79, -45).altDeg).toBeCloseTo(45, 6);
+    expect(noon(79, -45).azDeg).toBeCloseTo(0, 6);
+  });
+
+  it('raises and lowers the noon Sun by the obliquity at the solstices', () => {
+    // The model's own solstices, not the real calendar's: this orbit is circular, so its
+    // quarter points fall a day or two before the dates in an almanac.
+    const june = dayOfYearFromLonFraction(0.25);
+    const december = dayOfYearFromLonFraction(0.75);
+    expect(noon(june, 45).altDeg).toBeCloseTo(45 + REALISTIC.obliquityDeg, 6);
+    expect(noon(december, 45).altDeg).toBeCloseTo(45 - REALISTIC.obliquityDeg, 6);
+  });
+
+  it('puts the Sun on the horizon due east a quarter turn before equinox noon', () => {
+    // At an equinox the Sun rises due east from every latitude, which is the one sunrise
+    // bearing that does not depend on where you are standing.
+    for (const lat of [0, 45, -45, 70]) {
+      const rise = sunAltAzAt(REALISTIC, 79, noonSpinDeg(REALISTIC, 79, 0) - 90, lat, 0);
+      expect(rise.altDeg).toBeCloseTo(0, 6);
+      expect(rise.azDeg).toBeCloseTo(90, 6);
+    }
   });
 });
 
 describe('local solar noon anchoring (noonSpinDeg)', () => {
-  // At the noon spin angle the Sun should be on the observer's meridian: its
-  // altitude equals the analytic peak, so the simulator's 12:00 = Sun highest.
+  // Local apparent noon must place the Sun at upper culmination.
   const cases = [
     { day: 79, lat: 0, lon: 0 },
     { day: 172, lat: 47.61, lon: -122.33 },
@@ -283,13 +296,11 @@ describe('seasonal warmth signal', () => {
   const close = (a: number, b: number, tol = 1e-4) => Math.abs(a - b) <= tol;
 
   it('daily insolation matches the closed form at the equator equinox', () => {
-    // lat 0, dec 0: mean of max(0,sin alt) over the day = 1/pi.
     expect(close(dailyInsolation(0, 0), 1 / Math.PI)).toBe(true);
   });
 
   it('is zero in polar night and equals sin(lat)sin(dec) in polar day', () => {
-    expect(dailyInsolation(80 * DEG, -30 * DEG)).toBe(0); // Sun never rises
-    // Sun never sets: the day-long mean is the (constant) sin of the altitude.
+    expect(dailyInsolation(80 * DEG, -30 * DEG)).toBe(0);
     expect(close(dailyInsolation(80 * DEG, 30 * DEG), Math.sin(80 * DEG) * Math.sin(30 * DEG))).toBe(true);
   });
 
@@ -299,7 +310,6 @@ describe('seasonal warmth signal', () => {
     expect(s.warmthMax > s.warmthMin).toBe(true);
     expect(s.warmthMin > 0.05 && s.warmthMin < 0.12).toBe(true);
     expect(s.warmthMax > 0.32 && s.warmthMax < 0.38).toBe(true);
-    // Peak warmth trails peak sunlight (thermal lag), by a few weeks.
     const lag = ((s.warmthMaxIndex - s.insolationMaxIndex) % 365 + 365) % 365;
     expect(lag > 15 && lag < 45).toBe(true);
   });
@@ -311,7 +321,6 @@ describe('seasonal warmth signal', () => {
   });
 
   it('reports two warm seasons for a once-per-year precessing axis', () => {
-    // Seasonal cycles = |precessionTurnsPerYear - 1|; -1 turn/yr gives two summers.
     const cfg = defaultCustomConfig();
     cfg.axisMode = 'precession';
     cfg.precessionTurnsPerYear = -1;
@@ -323,15 +332,13 @@ describe('seasonal warmth signal', () => {
     cfg.axisMode = 'leanToSun';
     const s = seasonCycle(cfg, 45);
     expect(s.warmSeasonsPerYear).toBe(0);
-    expect(s.warmthMax - s.warmthMin < 0.01).toBe(true); // perpetual summer
+    expect(s.warmthMax - s.warmthMin < 0.01).toBe(true);
   });
 });
 
 describe('accumulating precession across orbits', () => {
   const close = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
 
-  // Declination at an accumulated ecliptic longitude (axis phase = longitude), the
-  // quantity that drives a steadily precessing axis lap after lap.
   const decAtLambda = (cfg: ReturnType<typeof defaultCustomConfig>, lambda: number) => {
     const { obliquityDeg, axisLongitudeDeg } = axisParamsAt(cfg, lambda, lambda);
     return sunDeclinationDeg(obliquityDeg, axisLongitudeDeg, lambda);
@@ -346,25 +353,23 @@ describe('accumulating precession across orbits', () => {
 
   it('detects the multi-year repeat period from the precession rate', () => {
     expect(periodOrbits(REALISTIC)).toBe(1);
-    expect(periodOrbits(precession(4))).toBe(1); // whole turns repeat every orbit
+    expect(periodOrbits(precession(4))).toBe(1);
     expect(periodOrbits(precession(3.5))).toBe(2);
     expect(periodOrbits(precession(2.2))).toBe(5);
     expect(periodOrbits(precession(0.3))).toBe(10);
   });
 
   it('makes consecutive orbits genuinely differ but repeat after the period', () => {
-    const cfg = precession(3.5); // period 2 orbits
+    const cfg = precession(3.5);
     const o0 = decAtLambda(cfg, 100);
     const o1 = decAtLambda(cfg, 100 + 360);
     const o2 = decAtLambda(cfg, 100 + 720);
-    expect(Math.abs(o0 - o1) > 10).toBe(true); // a different season the next lap
-    expect(close(o0, o2, 1e-6)).toBe(true); // back to the start after 2 orbits
+    expect(Math.abs(o0 - o1) > 10).toBe(true);
+    expect(close(o0, o2, 1e-6)).toBe(true);
   });
 
   it('leaves the accumulated axis continuous across the year boundary (no snap)', () => {
     const cfg = precession(3.5);
-    // Two instants a sliver of longitude apart, straddling an orbit boundary: the
-    // change must be proportional to the tiny step (a real reset would jump ~180deg).
     expect(close(decAtLambda(cfg, 360 - 1e-3), decAtLambda(cfg, 360 + 1e-3), 0.05)).toBe(true);
   });
 
@@ -386,28 +391,21 @@ describe('accumulating precession across orbits', () => {
     const cyc = seasonCycle(precession(3.5), 45);
     expect(cyc.periodOrbits).toBe(2);
     expect(cyc.warmth.length).toBe(2 * 365);
-    // 3.5 turns/yr gives |k-1| = 2.5 seasonal cycles per year.
     expect(Math.abs(cyc.warmSeasonsPerYear - 2.5) < 0.2).toBe(true);
   });
 
   it('averages the mean Sun RA rate over the full cycle, not a single orbit', () => {
-    // For a non-whole-number precession rate the RA winding over one orbit depends on
-    // which arc it covers, so a single-orbit average is wrong. The correct cycle mean
-    // equals the closed form sign(cos E)*(1-k)*orbitRate. (A one-orbit integral passes
-    // only for whole- and half-integer k, which is why the rendered-spin test below
-    // also exercises a non-half-integer rate.)
+    // Fractional precession requires averaging over its full repeat cycle.
     const orbitRate = 360 / (365.25 * 24);
     for (const k of [1.2, 2.2, 0.3, -1.7]) {
-      const cfg = precession(k); // obliquity 35 (cos E > 0)
+      const cfg = precession(k);
       const expected = (1 - k) * orbitRate;
       expect(Math.abs(meanSunRaRateDegPerHour(cfg) - expected) < 1e-5).toBe(true);
     }
   });
 
   it('renders the mean spin at the set sidereal rate even with accumulation', () => {
-    // Simulate the clock the way state.advanceTime / currentSpinDeg do, over exactly
-    // one full repeat cycle, and confirm the planet's mean rendered spin equals the set
-    // rate. Includes a non-half-integer rate (2.2), which a single-orbit mean gets wrong.
+    // Integrate rendered spin over one full repeat cycle.
     for (const k of [3.5, 2.2, 0.3]) {
       const cfg = precession(k);
       const lon = 0;
@@ -423,8 +421,8 @@ describe('accumulating precession across orbits', () => {
       };
       let prev = renderedSpin(day, orbit, timeOfDay);
       let totalSpin = 0;
-      const stepH = 3; // absolute hours per step
-      const steps = Math.round((periodOrbits(cfg) * 365.25 * 24) / stepH); // exactly one cycle
+      const stepH = 3;
+      const steps = Math.round((periodOrbits(cfg) * 365.25 * 24) / stepH);
       for (let i = 0; i < steps; i++) {
         const rawDay = day + stepH / 24;
         orbit += Math.floor((rawDay - 1) / 365.25);
@@ -437,7 +435,6 @@ describe('accumulating precession across orbits', () => {
         prev = cur;
       }
       const meanRate = totalSpin / (steps * stepH);
-      // Drift per year must be tiny (the old one-orbit model leaked ~3.6 deg/yr here).
       expect(Math.abs(meanRate - spinSet) * 365.25 * 24 < 0.1).toBe(true);
     }
   });
@@ -463,14 +460,13 @@ describe('formula mode axis parameters', () => {
 
   it('evaluates tilt and lean formulas against the orbital phase', () => {
     const c = formulaConfig('30 + 10*wave(phase)', '90 + 80*wave(2*phase)');
-    // phase = sunLon/360, so sunLon 0 -> phase 0, sunLon 90 -> phase 0.25.
     const atEquinox = axisParamsAt(c, 0);
-    expect(close(atEquinox.obliquityDeg, 30)).toBe(true); // wave(0) = 0
-    expect(close(atEquinox.axisLongitudeDeg, 90)).toBe(true); // wave(0) = 0
+    expect(close(atEquinox.obliquityDeg, 30)).toBe(true);
+    expect(close(atEquinox.axisLongitudeDeg, 90)).toBe(true);
 
     const atSummer = axisParamsAt(c, 90);
-    expect(close(atSummer.obliquityDeg, 40)).toBe(true); // wave(0.25) = 1
-    expect(close(atSummer.axisLongitudeDeg, 90)).toBe(true); // wave(0.5) = 0
+    expect(close(atSummer.obliquityDeg, 40)).toBe(true);
+    expect(close(atSummer.axisLongitudeDeg, 90)).toBe(true);
   });
 
   it('keeps declination finite and smooth across a full year', () => {
@@ -480,7 +476,6 @@ describe('formula mode axis parameters', () => {
       const dec = declinationForDay(c, day);
       expect(Number.isFinite(dec)).toBe(true);
       expect(Math.abs(dec) <= 90).toBe(true);
-      // No teleporting: day-to-day declination change stays bounded.
       expect(Math.abs(dec - prev) < 5).toBe(true);
       prev = dec;
     }
@@ -488,7 +483,6 @@ describe('formula mode axis parameters', () => {
 
   it('uses the accumulated axis phase so year-driven formulas evolve across orbits', () => {
     const c = formulaConfig('10 + 5*year', '90');
-    // axisParamsAt receives the accumulated phase; orbit 0 vs orbit 3 at the same day differ.
     const day = 100;
     const sunLon = sunLongitudeDeg(day);
     const orbit0 = axisParamsAt(c, sunLon, 0 * 360 + sunLon);
@@ -521,11 +515,10 @@ describe('secular formulas evolve the seasonal aggregates across orbits', () => 
     expect(axisIsSecular(formulaConfig('8 + 28*sat(year/6)', '90'))).toBe(true);
     expect(axisIsSecular(formulaConfig('23.4', '90 + 5*t'))).toBe(true);
     expect(axisIsSecular(formulaConfig('20 + orbit', '90'))).toBe(true);
-    expect(axisIsSecular(REALISTIC)).toBe(false); // not formula mode
+    expect(axisIsSecular(REALISTIC)).toBe(false);
   });
 
   it('a secular tilt deepens the climate cycle from one orbit to the next', () => {
-    // Slow Awakening: tilt climbs 8 -> 36 across six orbits, so the warmth swing grows.
     const c = formulaConfig('8 + 28*sat(year/6)', '90');
     const lat = 47.61;
     const swing = (orbit: number) => {
@@ -547,15 +540,13 @@ describe('secular formulas evolve the seasonal aggregates across orbits', () => 
   it('warmthAt tracks the current orbit for a secular world', () => {
     const c = formulaConfig('8 + 28*sat(year/6)', '90');
     const lat = 47.61;
-    // Peak-summer felt warmth should rise as the tilt awakens over the orbits.
     const warmEarly = warmthAt(c, lat, 0, 172);
     const warmLate = warmthAt(c, lat, 5, 172);
     expect(warmLate).toBeGreaterThan(warmEarly);
   });
 
   it('maxPoleStep stays tiny for the smooth examples and spikes for a teleport', () => {
-    // Every shipped example glides; raw degree jumps that are whole turns (Wandering
-    // Pole, 1080 = 3*360) are continuous in the pole vector.
+    // Whole-turn degree jumps remain continuous in the pole vector.
     for (const ex of [
       ['28 + 22*wave(phase)', '90'],
       ['30 + 18*wave(phase)', '90 + 80*wave(2*phase)'],
@@ -565,9 +556,7 @@ describe('secular formulas evolve the seasonal aggregates across orbits', () => 
     ]) {
       expect(maxPoleStep(formulaConfig(ex[0], ex[1]))).toBeLessThan(0.05);
     }
-    // A lean that does not close on a whole turn teleports the pole at the year wrap.
     expect(maxPoleStep(formulaConfig('40', '90 + 1000*phase'))).toBeGreaterThan(0.2);
-    // A tilt that snaps from 30 back to 0 at the wrap also jumps.
     expect(maxPoleStep(formulaConfig('30*phase', '90'))).toBeGreaterThan(0.2);
   });
 
@@ -575,12 +564,8 @@ describe('secular formulas evolve the seasonal aggregates across orbits', () => 
     const ex = FORMULA_EXAMPLES.find((e) => e.name === 'Maelstrom');
     expect(ex).toBeTruthy();
     const c = formulaConfig(ex!.tiltFormula, ex!.leanFormula);
-    // Smooth: no Sun teleport (stays under the UI warning threshold).
     expect(maxPoleStep(c)).toBeLessThan(0.05);
-    // Aperiodic: it reads year, so each orbit genuinely differs.
     expect(axisIsSecular(c)).toBe(true);
-    // No two years the same: somewhere in the year the declination differs a lot between
-    // orbits (a single day can coincide by chance, so compare the whole-year signature).
     const decAt = (orbit: number, day: number) => declinationForDay(c, day, accumulatedLonDeg(orbit, day));
     const yearMaxDiff = (o1: number, o2: number) => {
       let m = 0;
@@ -589,10 +574,7 @@ describe('secular formulas evolve the seasonal aggregates across orbits', () => 
     };
     expect(yearMaxDiff(0, 7)).toBeGreaterThan(15);
     expect(yearMaxDiff(3, 20)).toBeGreaterThan(15);
-    // Truly aperiodic: the rational version repeated every 9000 years, but the irrational
-    // (sqrt2/sqrt3) frequencies break any finite period, so even year 9000 differs from year 0.
     expect(yearMaxDiff(0, 9000)).toBeGreaterThan(15);
-    // Wildly varied: declination reaches far toward both poles somewhere in 40 orbits.
     let dMin = 90;
     let dMax = -90;
     for (let o = 0; o < 40; o++) {
@@ -610,10 +592,7 @@ describe('secular formulas evolve the seasonal aggregates across orbits', () => 
     const ex = FORMULA_EXAMPLES.find((e) => e.name === 'Fractal Coastline');
     expect(ex).toBeTruthy();
     const c = formulaConfig(ex!.tiltFormula, ex!.leanFormula);
-    // Smooth: the stacked octaves are a finite (truncated Weierstrass) sum, so the pole
-    // never teleports despite the fine structure.
     expect(maxPoleStep(c)).toBeLessThan(0.05);
-    // Aperiodic: two slow out-of-step year drifts keep orbits from repeating.
     expect(axisIsSecular(c)).toBe(true);
     const decAt = (orbit: number, day: number) => declinationForDay(c, day, accumulatedLonDeg(orbit, day));
     const yearMaxDiff = (o1: number, o2: number) => {
@@ -622,9 +601,6 @@ describe('secular formulas evolve the seasonal aggregates across orbits', () => 
       return m;
     };
     expect(yearMaxDiff(3, 20)).toBeGreaterThan(10);
-    // Self-similar fine structure: the yearly declination curve turns many more times
-    // than a plain tilted world (which has exactly two: one solstice each way). Count
-    // the sign changes of the day-to-day difference over one orbit.
     const turns = (orbit: number) => {
       let count = 0;
       let prev = decAt(orbit, 2) - decAt(orbit, 1);
@@ -636,7 +612,6 @@ describe('secular formulas evolve the seasonal aggregates across orbits', () => 
       return count;
     };
     expect(turns(0)).toBeGreaterThan(6);
-    // Wildly varied: the declination still sweeps far toward both poles.
     let dMin = 90;
     let dMax = -90;
     for (let o = 0; o < 30; o++) {
@@ -657,20 +632,19 @@ describe('spin formula drives the rotation speed', () => {
     c.spinFormula = spinFormula;
     return c;
   };
-  const lonAtPhase = (phase: number) => phase * 360; // sunLon for a given fraction of orbit
+  const lonAtPhase = (phase: number) => phase * 360;
 
   it('the default "1" formula is an ordinary constant spin', () => {
     expect(spinMultiplierAt(REALISTIC, 0)).toBe(1);
     expect(spinMultiplierAt(REALISTIC, 123)).toBe(1);
-    // solarDayHours is unchanged from the plain base rate.
     expect(close(solarDayHours(REALISTIC), solarDayHours(REALISTIC, 90), 1e-9)).toBe(true);
   });
 
   it('evaluates the multiplier against the orbital phase', () => {
     const c = spinConfig('cwave(phase)');
-    expect(close(spinMultiplierAt(c, lonAtPhase(0)), 1)).toBe(true); // cos(0)
-    expect(close(spinMultiplierAt(c, lonAtPhase(0.25)), 0, 1e-9)).toBe(true); // cos(pi/2)
-    expect(close(spinMultiplierAt(c, lonAtPhase(0.5)), -1)).toBe(true); // cos(pi)
+    expect(close(spinMultiplierAt(c, lonAtPhase(0)), 1)).toBe(true);
+    expect(close(spinMultiplierAt(c, lonAtPhase(0.25)), 0, 1e-9)).toBe(true);
+    expect(close(spinMultiplierAt(c, lonAtPhase(0.5)), -1)).toBe(true);
   });
 
   it('scales the sidereal spin rate by the multiplier', () => {
@@ -680,11 +654,8 @@ describe('spin formula drives the rotation speed', () => {
 
   it('makes the solar day vary through the year and reverse the Sun when the spin flips', () => {
     const c = spinConfig('cwave(phase)');
-    // Near phase 0 the spin is full and prograde, so the Sun rises in the east (+1).
     expect(apparentSolarSpinSign(c, lonAtPhase(0.02), lonAtPhase(0.02))).toBe(1);
-    // Past the standstill the multiplier is negative, so the apparent motion reverses.
     expect(apparentSolarSpinSign(c, lonAtPhase(0.5), lonAtPhase(0.5))).toBe(-1);
-    // A day near the standstill (multiplier ~ 0) lasts far longer than a brisk day.
     const briskDay = solarDayHours(c, lonAtPhase(0.0), lonAtPhase(0.0));
     const slowDay = solarDayHours(c, lonAtPhase(0.24), lonAtPhase(0.24));
     expect(slowDay).toBeGreaterThan(briskDay * 2);
@@ -697,13 +668,13 @@ describe('spin formula drives the rotation speed', () => {
   });
 
   it('detects a zero-crossing (reversing) spin but not a positive one', () => {
-    expect(spinReverses(spinConfig('cwave(phase)'))).toBe(true); // dips to -1
-    expect(spinReverses(spinConfig('0.55 + 0.45*cwave(phase)'))).toBe(false); // min 0.1
-    expect(spinReverses(spinConfig('0.4 + 0.3*wave(2*phase)'))).toBe(false); // min 0.1
-    expect(spinReverses(REALISTIC)).toBe(false); // constant spin
+    expect(spinReverses(spinConfig('cwave(phase)'))).toBe(true);
+    expect(spinReverses(spinConfig('0.55 + 0.45*cwave(phase)'))).toBe(false);
+    expect(spinReverses(spinConfig('0.4 + 0.3*wave(2*phase)'))).toBe(false);
+    expect(spinReverses(REALISTIC)).toBe(false);
     const retro = cloneConfig(REALISTIC);
     retro.prograde = false;
-    expect(spinReverses(retro)).toBe(false); // constant retrograde does not flip
+    expect(spinReverses(retro)).toBe(false);
   });
 
   it('reports the base spin (multiplier 1) when no orbital position is given', () => {
@@ -730,28 +701,108 @@ describe('shared solar-geometry helpers', () => {
   });
 
   it('sunriseHourAngleRad: at a pole the Sun is up only when the declination is on its side', () => {
-    // Sun strictly above the horizon (dec same sign as the pole) is polar day.
     expect(sunriseHourAngleRad(90 * D, 10 * D)).toBe(Math.PI);
     expect(sunriseHourAngleRad(-90 * D, -10 * D)).toBe(Math.PI);
-    // Sun strictly below is polar night.
     expect(sunriseHourAngleRad(90 * D, -10 * D)).toBe(0);
-    // Exactly on the horizon (dec = 0) counts as no daylight, not midnight Sun.
     expect(sunriseHourAngleRad(90 * D, 0)).toBe(0);
     expect(sunriseHourAngleRad(-90 * D, 0)).toBe(0);
   });
 
   it('sunriseHourAngleRad: high latitude near solstice is polar day or night', () => {
-    expect(sunriseHourAngleRad(80 * D, 23.44 * D)).toBe(Math.PI); // arctic summer
-    expect(sunriseHourAngleRad(80 * D, -23.44 * D)).toBe(0); // arctic winter
+    expect(sunriseHourAngleRad(80 * D, 23.44 * D)).toBe(Math.PI);
+    expect(sunriseHourAngleRad(80 * D, -23.44 * D)).toBe(0);
   });
 
   it('culminationAltitudesDeg: noon and midnight Sun heights', () => {
-    // Equator at equinox: Sun overhead at noon, straight down at midnight.
     const eq = culminationAltitudesDeg(0, 0);
     expect(close(eq.upperDeg, 90)).toBe(true);
     expect(close(eq.lowerDeg, -90)).toBe(true);
-    // 45N at the June solstice: noon Sun = 90 - (lat - dec) = 68.44.
     const mid = culminationAltitudesDeg(45 * D, 23.44 * D);
     expect(close(mid.upperDeg, 90 - (45 - 23.44))).toBe(true);
+  });
+});
+
+describe('the polar label cannot turn on floating point residue', () => {
+  const RAD = Math.PI / 180;
+  // Equinox declination carries about 1.4e-15 degrees of floating-point residue.
+  const RESIDUE = 1.3955663055539697e-15 * RAD;
+
+  it('calls the pole at an equinox polar night whichever way the residue falls', () => {
+    for (const dec of [RESIDUE, -RESIDUE, 0]) {
+      expect(classifyDaylight(sunriseHourAngleRad(90 * RAD, dec)).polar).toBe('night');
+      expect(classifyDaylight(sunriseHourAngleRad(-90 * RAD, dec)).polar).toBe('night');
+    }
+  });
+
+  it('still lets a real declination decide, so the physics is untouched', () => {
+    expect(classifyDaylight(sunriseHourAngleRad(90 * RAD, 1e-9 * RAD)).polar).toBe('day');
+    expect(classifyDaylight(sunriseHourAngleRad(90 * RAD, -1e-9 * RAD)).polar).toBe('night');
+    expect(classifyDaylight(sunriseHourAngleRad(-90 * RAD, 1e-9 * RAD)).polar).toBe('night');
+    expect(classifyDaylight(sunriseHourAngleRad(90 * RAD, 23.44 * RAD)).polar).toBe('day');
+  });
+});
+
+describe('a warm season landing on the window edge still counts', () => {
+  // This lean puts an upward warmth crossing at the first window sample.
+  const edgeWorld = () => {
+    const c = cloneConfig(REALISTIC);
+    c.axisLongitudeDeg = 345.5;
+    return c;
+  };
+
+  it('reports the same rate as the repeating cycle at every span length', () => {
+    const c = edgeWorld();
+    const rate = seasonCycle(c, 45).warmSeasonsPerYear;
+    expect(rate).toBe(1);
+    for (const years of [1, 2, 3, 5, 10]) {
+      expect(seasonSpan(c, 45, 0, years).warmSeasonsPerYear).toBeCloseTo(rate, 10);
+    }
+    expect(seasonSpan(c, 45, 0, 1).warmthMax - seasonSpan(c, 45, 0, 1).warmthMin).toBeGreaterThan(0.2);
+  });
+
+  it('agrees with the cycle for every lean and latitude, not just this one', () => {
+    for (let lean = 0; lean < 360; lean += 7.5) {
+      for (const lat of [45, -30, 66]) {
+        const c = cloneConfig(REALISTIC);
+        c.axisLongitudeDeg = lean;
+        expect(seasonSpan(c, lat, 0, 1).warmSeasonsPerYear).toBeCloseTo(
+          seasonCycle(c, lat).warmSeasonsPerYear,
+          10,
+        );
+      }
+    }
+  });
+});
+
+describe('season caches answer the same for the same key', () => {
+  // Each ordering needs a fresh module and cache to test arrival independence.
+  const NEARBY = [47.6062, 47.60621, 47.6062499, 47.60615];
+
+  const firstAnswer = async (order: number[], read: (m: any, lat: number) => number) => {
+    vi.resetModules();
+    const mod = await import('./season');
+    const cfg = (await import('./config')).REALISTIC;
+    return order.map((lat) => read({ ...mod, cfg }, lat))[0];
+  };
+
+  it('gives one answer for a latitude however the user arrived at it', async () => {
+    const read = (m: any, lat: number) => m.seasonCycle(m.cfg, lat).warmthMax;
+    const forward = await firstAnswer(NEARBY, read);
+    const backward = await firstAnswer([...NEARBY].reverse(), read);
+    expect(forward).toBe(backward);
+  });
+
+  it('does the same for a multi-year span', async () => {
+    const read = (m: any, lat: number) => m.seasonSpan(m.cfg, lat, 0, 3).warmthMax;
+    const forward = await firstAnswer(NEARBY, read);
+    const backward = await firstAnswer([...NEARBY].reverse(), read);
+    expect(forward).toBe(backward);
+  });
+
+  it('still tells genuinely different latitudes apart', () => {
+    expect(seasonCycle(REALISTIC, 10).warmthMax).not.toBeCloseTo(
+      seasonCycle(REALISTIC, 60).warmthMax,
+      6,
+    );
   });
 });

@@ -1,5 +1,4 @@
-// Location presets and calendar helpers.
-
+import { CALENDAR_DAYS, dayOfYearFromLonFraction } from './calendar';
 import { posMod } from './vec';
 
 export interface City {
@@ -26,12 +25,14 @@ export const CITIES: City[] = [
   { name: 'North Pole', latDeg: 90, lonDeg: 0 },
 ];
 
-/** Calendar month names, lengths (non-leap), and single-letter labels for chart axes. */
+/** Non-leap calendar month names. */
 const MONTHS = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ];
+/** Non-leap calendar month lengths. */
 export const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+/** Single-letter month labels for chart axes. */
 export const MONTH_LETTERS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
 /** Day offset at the start of each month (non-leap): [0, 31, 59, 90, ...]. */
 export const MONTH_START_DAYS = MONTH_DAYS.reduce<number[]>((acc, _d, i) => {
@@ -41,7 +42,7 @@ export const MONTH_START_DAYS = MONTH_DAYS.reduce<number[]>((acc, _d, i) => {
 
 /** Format a day-of-year (1 = Jan 1) as a short calendar label, e.g. "Jun 21". */
 export function dayOfYearLabel(dayOfYear: number): string {
-  let d = Math.floor(posMod(dayOfYear - 1, 365));
+  let d = Math.floor(posMod(dayOfYear - 1, CALENDAR_DAYS));
   let month = 0;
   while (month < 11 && d >= MONTH_DAYS[month]) {
     d -= MONTH_DAYS[month];
@@ -50,9 +51,10 @@ export function dayOfYearLabel(dayOfYear: number): string {
   return `${MONTHS[month]} ${d + 1}`;
 }
 
+/** Equinoxes and solstices derived from quarter points of the circular orbit. */
 export const NOTABLE_DATES: { name: string; dayOfYear: number }[] = [
-  { name: 'March equinox', dayOfYear: 79 },
-  { name: 'June solstice', dayOfYear: 172 },
-  { name: 'September equinox', dayOfYear: 265 },
-  { name: 'December solstice', dayOfYear: 355 },
+  { name: 'March equinox', dayOfYear: dayOfYearFromLonFraction(0) },
+  { name: 'June solstice', dayOfYear: dayOfYearFromLonFraction(0.25) },
+  { name: 'September equinox', dayOfYear: dayOfYearFromLonFraction(0.5) },
+  { name: 'December solstice', dayOfYear: dayOfYearFromLonFraction(0.75) },
 ];

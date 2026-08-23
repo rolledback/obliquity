@@ -1,8 +1,7 @@
-// Minimal dependency-free 3D vector and 3x3 matrix helpers.
-// Kept independent of Three.js so the astronomy math can be unit tested in Node.
+// Dependency-free vector and matrix helpers for testable astronomy math.
 
 export type V3 = readonly [number, number, number];
-// Row-major 3x3 matrix: [m00, m01, m02, m10, m11, m12, m20, m21, m22].
+/** Row-major 3x3 matrix. */
 export type Mat3 = readonly [
   number, number, number,
   number, number, number,
@@ -12,10 +11,7 @@ export type Mat3 = readonly [
 export const DEG = Math.PI / 180;
 export const RAD = 180 / Math.PI;
 
-/**
- * Unit vector for a geographic latitude/longitude (degrees) in the earth-fixed frame
- * (X through lon 0 on the equator, Z through the north pole). This is the local zenith.
- */
+/** Local zenith for geographic coordinates in the earth-fixed frame. */
 export function geographicUnit(latDeg: number, lonDeg: number): V3 {
   const phi = latDeg * DEG;
   const lam = lonDeg * DEG;
@@ -27,14 +23,45 @@ export function dot(a: V3, b: V3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-// Rotation about the Y axis by angle (radians).
+export function cross(a: V3, b: V3): V3 {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+}
+
+export function sub(a: V3, b: V3): V3 {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+}
+
+export function scale(v: V3, k: number): V3 {
+  return [v[0] * k, v[1] * k, v[2] * k];
+}
+
+export function norm(v: V3): number {
+  return Math.hypot(v[0], v[1], v[2]);
+}
+
+/** Unit vector along v. A zero-length vector returns +X rather than NaNs. */
+export function normalize(v: V3): V3 {
+  const n = norm(v);
+  return n < 1e-12 ? [1, 0, 0] : [v[0] / n, v[1] / n, v[2] / n];
+}
+
+/** Angle between two vectors in degrees, robust for near-parallel inputs. */
+export function angleBetweenDeg(a: V3, b: V3): number {
+  return Math.acos(clamp(dot(normalize(a), normalize(b)), -1, 1)) * RAD;
+}
+
+/** Rotation about the Y axis by an angle in radians. */
 export function rotY(a: number): Mat3 {
   const c = Math.cos(a);
   const s = Math.sin(a);
   return [c, 0, s, 0, 1, 0, -s, 0, c];
 }
 
-// Rotation about the Z axis by angle (radians).
+/** Rotation about the Z axis by an angle in radians. */
 export function rotZ(a: number): Mat3 {
   const c = Math.cos(a);
   const s = Math.sin(a);
@@ -66,7 +93,7 @@ export function matVec(m: Mat3, v: V3): V3 {
   ];
 }
 
-// Transpose, which for an orthonormal rotation matrix is also its inverse.
+/** Matrix transpose, also the inverse of an orthonormal rotation matrix. */
 export function transpose(m: Mat3): Mat3 {
   return [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]];
 }

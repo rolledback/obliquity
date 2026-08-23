@@ -1,7 +1,4 @@
-// Simulation configuration: the rotation parameters the user can change.
-// The orbit (ecliptic plane and year length) is intentionally fixed.
-
-import { formulaIsSecular } from './formula';
+import { SITE_VARS, compileFormula, formulaIsSecular } from './formula';
 import { sunLongitudeDeg } from './calendar';
 
 export { YEAR_DAYS, YEAR_HOURS } from './calendar';
@@ -47,13 +44,12 @@ export interface RotationConfig {
   tiltFormula: string;
   /** formula mode: expression for the axis lean direction in degrees. */
   leanFormula: string;
-  /**
-   * Spin-speed multiplier as a formula of orbital position (1 = the base rotation period
-   * above). Lets the spin speed up, slow, pause, or reverse through the year or across
-   * orbits. "1" is an ordinary constant spin. Independent of axisMode, so it combines
-   * with any axis behaviour.
-   */
+  /** Spin-speed multiplier formula, independent of axisMode. */
   spinFormula: string;
+  /** Observer latitude for formulas using `lat`, in degrees north. */
+  siteLatDeg: number;
+  /** Observer longitude for formulas using `site`, in degrees east. */
+  siteLonDeg: number;
 }
 
 // Earth's true values, used for the fixed "realistic" reference.
@@ -73,6 +69,8 @@ export const REALISTIC: RotationConfig = {
   tiltFormula: '23.4397',
   leanFormula: '90',
   spinFormula: '1',
+  siteLatDeg: 0,
+  siteLonDeg: 0,
 };
 
 export function defaultCustomConfig(): RotationConfig {
@@ -83,16 +81,12 @@ export function cloneConfig(c: RotationConfig): RotationConfig {
   return { ...c };
 }
 
-// Cap on how many orbits a repeating cycle may span. The 0.1-step precession slider
-// never needs more than 10; the cap also bounds work for any odd manual value.
+// The 0.1-step precession slider needs at most 10 orbits.
 const MAX_CYCLE_ORBITS = 12;
 
 /**
- * How many whole orbits the configuration takes to repeat. A precessing axis returns
- * to the same orientation after the smallest number of orbits that makes its total
- * turn a whole number; every other configuration repeats every single orbit. Capped at
- * MAX_CYCLE_ORBITS (the 0.1-step slider never needs more than 10; any odd manual value
- * falls back to the cap and is treated as quasi-periodic).
+ * Bounded orbit span for axis-cycle calculations.
+ * Precession uses its repeat period when found within MAX_CYCLE_ORBITS.
  */
 export function periodOrbits(config: RotationConfig): number {
   if (config.axisMode !== 'precession') return 1;
@@ -103,28 +97,38 @@ export function periodOrbits(config: RotationConfig): number {
   return MAX_CYCLE_ORBITS;
 }
 
-/**
- * True when the axis genuinely evolves from one orbit to the next beyond its repeat
- * period, i.e. a formula-mode world whose tilt or lean reads year, t, or orbit. Such a
- * world is aperiodic, so the seasonal caches (year heatmap, climate curve, felt warmth)
- * must be rebuilt for the orbit on display instead of reusing orbit 0. Every other mode
- * is fully captured by periodOrbits and returns false.
- */
+/** Whether an axis formula references an across-orbit variable. */
 export function axisIsSecular(config: RotationConfig): boolean {
   if (config.axisMode !== 'formula') return false;
   return formulaIsSecular(config.tiltFormula) || formulaIsSecular(config.leanFormula);
 }
 
-/**
- * A cache key over only the axis-orientation fields. The Sun's declination, the season
- * cycle, and the mean right-ascension rate all depend on how the axis is oriented but
- * not on how fast or which way the planet spins, so keying on these fields alone keeps
- * those caches warm while the spin sliders move.
- */
+/** Whether an axis formula references the observer's location. */
+export function axisUsesSite(config: RotationConfig): boolean {
+  if (config.axisMode !== 'formula') return false;
+  return [config.tiltFormula, config.leanFormula].some(readsSite);
+}
+
+/** Whether a formula source mentions where the observer is standing. */
+function readsSite(src: string): boolean {
+  const { refs } = compileFormula(src);
+  return SITE_VARS.some((v) => refs.has(v));
+}
+
+/** Cache key for spin rate, direction, and any location dependency. */
+export function spinConfigKey(config: RotationConfig): string {
+  return [
+    config.rotationPeriodHours,
+    config.prograde,
+    config.spinFormula,
+    // Location affects only formulas that reference it.
+    readsSite(config.spinFormula) ? `${config.siteLatDeg},${config.siteLonDeg}` : '',
+  ].join('\u0000');
+}
+
+/** Axis-orientation cache key, deliberately excluding spin fields. */
 export function axisConfigKey(config: RotationConfig): string {
-  // Join with NUL, which cannot appear in the numeric fields or in a formula typed into a
-  // text input, so a tilt/lean formula that happens to contain the old "|" delimiter can no
-  // longer collide two genuinely different configs onto the same cache key.
+  // NUL avoids delimiter collisions with formula text.
   return [
     config.axisMode,
     config.obliquityDeg,
@@ -134,15 +138,12 @@ export function axisConfigKey(config: RotationConfig): string {
     config.rollAmplitudeDeg,
     config.tiltFormula,
     config.leanFormula,
+    // Location affects only formulas that reference it.
+    axisUsesSite(config) ? `${config.siteLatDeg},${config.siteLonDeg}` : '',
   ].join('\u0000');
 }
 
-/**
- * The Sun's ecliptic longitude accumulated across whole elapsed orbits. The Sun's
- * direction is periodic, but a steadily precessing axis is driven by this ever-growing
- * angle, which is what makes each orbit's seasons differ. Orbit 0 gives the ordinary
- * within-year longitude.
- */
+/** Unwrapped Sun longitude used to evolve axes across orbits. */
 export function accumulatedLonDeg(orbit: number, dayOfYear: number): number {
   return orbit * 360 + sunLongitudeDeg(dayOfYear);
 }

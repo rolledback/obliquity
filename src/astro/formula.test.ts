@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { compileFormula, formulaVars, type FormulaVars } from './formula';
 
-const VARS: FormulaVars = { phase: 0.25, lon: 90, year: 2.25, t: 2.25, orbit: 2, day: 172 };
+const VARS: FormulaVars = {
+  phase: 0.25, lon: 90, year: 2.25, t: 2.25, orbit: 2, day: 172, lat: 47.61, site: -122.33,
+};
 const ev = (src: string, vars: Partial<FormulaVars> = {}) =>
   compileFormula(src).fn({ ...VARS, ...vars });
 const close = (a: number, b: number, tol = 1e-9) => Math.abs(a - b) <= tol;
@@ -16,14 +18,14 @@ describe('formula compiler: numbers and operators', () => {
   it('respects operator precedence and parentheses', () => {
     expect(ev('2 + 3 * 4')).toBe(14);
     expect(ev('(2 + 3) * 4')).toBe(20);
-    expect(ev('10 - 2 - 3')).toBe(5); // left associative
+    expect(ev('10 - 2 - 3')).toBe(5);
     expect(ev('12 / 2 / 3')).toBe(2);
   });
 
   it('treats ^ as right-associative and binds tighter than unary minus', () => {
-    expect(ev('2 ^ 3 ^ 2')).toBe(512); // 2^(3^2)
-    expect(ev('-2 ^ 2')).toBe(-4); // -(2^2)
-    expect(ev('2 ^ -1')).toBe(0.5); // exponent may be negative
+    expect(ev('2 ^ 3 ^ 2')).toBe(512);
+    expect(ev('-2 ^ 2')).toBe(-4);
+    expect(ev('2 ^ -1')).toBe(0.5);
   });
 
   it('handles unary minus and plus', () => {
@@ -32,20 +34,23 @@ describe('formula compiler: numbers and operators', () => {
     expect(ev('3 - -2')).toBe(5);
   });
 
-  it('implements positive modulo via mod() and the % operator', () => {
-    expect(ev('mod(-1, 360)')).toBe(359); // mod() is always positive
+  it('gives a positive modulo through mod(), while % is the raw remainder', () => {
+    expect(ev('mod(-1, 360)')).toBe(359);
     expect(ev('7 % 3')).toBe(1);
+    expect(ev('-1 % 360')).toBe(-1);
   });
 });
 
 describe('formula compiler: variables and constants', () => {
-  it('reads each exposed variable', () => {
+  it('reads each exposed variable, including the observer position', () => {
     expect(ev('phase')).toBe(0.25);
     expect(ev('lon')).toBe(90);
     expect(ev('year')).toBe(2.25);
     expect(ev('t')).toBe(2.25);
     expect(ev('orbit')).toBe(2);
     expect(ev('day')).toBe(172);
+    expect(ev('lat')).toBe(47.61);
+    expect(ev('site')).toBe(-122.33);
   });
 
   it('knows PI, TAU and E', () => {
@@ -76,7 +81,6 @@ describe('formula compiler: functions', () => {
     expect(close(ev('wave(0)'), 0)).toBe(true);
     expect(close(ev('wave(0.25)'), 1)).toBe(true);
     expect(close(ev('wave(0.5)'), 0, 1e-9)).toBe(true);
-    // Continuity across the period boundary (a smooth primitive must not jump).
     expect(close(ev('wave(0.999)'), ev('wave(1.999)'), 1e-9)).toBe(true);
   });
 
@@ -95,13 +99,13 @@ describe('formula compiler: errors and guards', () => {
   it('reports a parse error for malformed input but still returns a usable fn', () => {
     const f = compileFormula('2 +');
     expect(f.error).not.toBeNull();
-    expect(f.fn(VARS)).toBe(0); // safe fallback
+    expect(f.fn(VARS)).toBe(0);
   });
 
   it('rejects unknown names and functions', () => {
     expect(compileFormula('foo').error).not.toBeNull();
     expect(compileFormula('bar(1)').error).not.toBeNull();
-    expect(compileFormula('sin(1, 2)').error).not.toBeNull(); // wrong arity
+    expect(compileFormula('sin(1, 2)').error).not.toBeNull();
   });
 
   it('treats a blank formula as 0 with no error', () => {
@@ -111,15 +115,15 @@ describe('formula compiler: errors and guards', () => {
   });
 
   it('guards NaN and Infinity to 0 so the simulation never sees them', () => {
-    expect(ev('0 / 0')).toBe(0); // NaN -> 0
-    expect(ev('1 / 0')).toBe(0); // +Infinity -> 0
-    expect(ev('-1 / 0')).toBe(0); // -Infinity -> 0
+    expect(ev('0 / 0')).toBe(0);
+    expect(ev('1 / 0')).toBe(0);
+    expect(ev('-1 / 0')).toBe(0);
   });
 
   it('keeps domain-restricted functions finite instead of NaN or -Infinity', () => {
-    expect(ev('sqrt(-1)')).toBe(0); // clamped to sqrt(0)
+    expect(ev('sqrt(-1)')).toBe(0);
     const lnZero = ev('ln(0)');
-    expect(Number.isFinite(lnZero)).toBe(true); // clamped away from -Infinity
+    expect(Number.isFinite(lnZero)).toBe(true);
     expect(lnZero).toBeLessThan(0);
     expect(Number.isFinite(ev('log10(-5)'))).toBe(true);
   });
@@ -129,12 +133,14 @@ describe('formula compiler: errors and guards', () => {
     expect(compileFormula('23.4 +').error).not.toBeNull();
   });
 
-  it('a realistic axis formula evaluates sensibly', () => {
-    // A gently wobbling tilt stays finite and near its base across the orbit.
-    for (let p = 0; p <= 1; p += 0.1) {
-      const tilt = ev('23.4 + 10 * sind(360 * phase)', { phase: p });
-      expect(tilt >= 13 && tilt <= 34).toBe(true);
-    }
+  it('evaluates a realistic axis formula to the right numbers', () => {
+    // Exact values, not a range. Asserting only 13 <= tilt <= 34 passed even with sind
+    // stubbed to return 0, because the constant term alone sits inside the range.
+    const tilt = (phase: number) => ev('23.4 + 10 * sind(360 * phase)', { phase });
+    expect(tilt(0)).toBeCloseTo(23.4, 9);
+    expect(tilt(0.25)).toBeCloseTo(33.4, 9);
+    expect(tilt(0.5)).toBeCloseTo(23.4, 9);
+    expect(tilt(0.75)).toBeCloseTo(13.4, 9);
   });
 
   it('rejects absurdly long or deeply nested formulas without crashing', () => {
@@ -159,8 +165,8 @@ describe('formulaVars: deriving inputs from the two longitudes', () => {
   });
 
   it('accumulates year and orbit from the axis phase while lon stays wrapped', () => {
-    const v = formulaVars(45, 2 * 360 + 45); // third orbit, 45 deg along
-    expect(close(v.lon, 45)).toBe(true); // wrapped to 0..360
+    const v = formulaVars(45, 2 * 360 + 45);
+    expect(close(v.lon, 45)).toBe(true);
     expect(close(v.phase, 0.125)).toBe(true);
     expect(close(v.year, 2 + 0.125)).toBe(true);
     expect(v.orbit).toBe(2);
@@ -171,5 +177,21 @@ describe('formulaVars: deriving inputs from the two longitudes', () => {
     expect(v.lon).toBeGreaterThanOrEqual(0);
     expect(close(v.lon, 270)).toBe(true);
     expect(v.phase).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('formula compiler: the allowlist is not the prototype chain', () => {
+  it('rejects inherited Object names the same as any other unknown name', () => {
+    // `in` walks the prototype chain, so these once compiled with error null and then
+    // evaluated to 0: the field went green and the formula quietly did nothing.
+    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+      expect(compileFormula(name).error).toMatch(/Unknown name/);
+      expect(compileFormula(`${name}(1)`).error).toMatch(/Unknown function/);
+    }
+  });
+
+  it('still accepts the real constants and functions', () => {
+    expect(compileFormula('PI').error).toBeNull();
+    expect(compileFormula('sin(1)').error).toBeNull();
   });
 });
