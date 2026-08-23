@@ -206,7 +206,7 @@ export class Scene3D {
 
   private loadEarthTexture(material: THREE.MeshStandardMaterial) {
     new THREE.TextureLoader().load(
-      `${import.meta.env.BASE_URL}textures/earth.jpg`,
+      `${import.meta.env.BASE_URL}textures/earth.webp`,
       (tex) => {
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();

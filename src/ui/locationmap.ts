@@ -45,7 +45,7 @@ export class LocationMap {
       this.imgReady = true;
       this.render();
     };
-    this.img.src = `${import.meta.env.BASE_URL}textures/earth.jpg`;
+    this.img.src = `${import.meta.env.BASE_URL}textures/earth.webp`;
     this.attachPointer();
     this.attachKeyboard();
   }
