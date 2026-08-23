@@ -1,17 +1,6 @@
-// Shared application state and time bookkeeping.
-//
-// Time uses two independent primaries the user can set freely:
-//   - dayOfYear (1..~365): orbital position. The orbit is fixed: one calendar day
-//     is always 24 absolute hours, regardless of the rotation settings.
-//   - timeOfDay (0..24): local apparent solar time at the observer, so 12:00 is
-//     local solar noon (Sun highest) by construction.
-// When animating, both advance together at rates linked by the solar-day length,
-// so a faster spin cycles the day/night many times per orbital day.
-
 import { YEAR_DAYS, accumulatedLonDeg, defaultCustomConfig, sunLongitudeDeg } from './astro/config';
 import type { RotationConfig } from './astro/config';
-import { noonSpinDeg } from './astro/orientation';
-import { apparentSolarSpinSign, solarDayHours } from './astro/daypath';
+import { apparentSolarSpinSign, solarDayHours, spinAtLocalTime } from './astro/daypath';
 import { posMod } from './astro/vec';
 
 /** Which 3D scene elements are shown (toggled in the View controls, read by the orbit scene). */
@@ -24,12 +13,16 @@ export interface ShowOptions {
   sunline: boolean;
   grid: boolean;
   stars: boolean;
+  moon: boolean;
+  moonOrbit: boolean;
 }
 
-/** The bottom-area view types, in their fixed left-to-right order. */
+/** View types available in the bottom area. */
 export type BottomViewId = 'realGraph' | 'customGraph' | 'locationMap';
+/** Bottom view order used by the fixed layout. */
 export const BOTTOM_VIEW_ORDER: BottomViewId[] = ['realGraph', 'customGraph', 'locationMap'];
 
+/** Mutable application state shared across controls and renderers. */
 export interface AppState {
   config: RotationConfig;
   latDeg: number;
@@ -38,13 +31,7 @@ export interface AppState {
   scenario: string;
   /** Orbital position: day of year, 1..~365. */
   dayOfYear: number;
-  /**
-   * How many complete orbits ("years") have elapsed since the run began. Combined with
-   * dayOfYear this gives the longitude accumulated across orbits, which a precessing
-   * axis needs so that each lap around the Sun genuinely differs from the last instead
-   * of resetting. Only a non-whole-number precession actually makes use of it; for any
-   * other configuration every orbit looks the same.
-   */
+  /** Completed orbits, used to keep precession and secular formulas from resetting. */
   orbit: number;
   /** Local apparent solar time at the observer, 0..24 (12 = local noon). */
   timeOfDay: number;
@@ -53,6 +40,8 @@ export interface AppState {
   speed: number;
   show: ShowOptions;
   followEarth: boolean;
+  /** Use true relative sizes and distances in the orbit view. */
+  trueScale: boolean;
   /** Which 3D view is active. */
   viewMode: 'orbit' | 'ground';
   /** Which 2D chart is shown: a single day, the whole year, or the climate curve. */
@@ -71,6 +60,7 @@ export interface AppState {
   followSun: boolean;
 }
 
+/** Create the initial application state. */
 export function defaultState(): AppState {
   return {
     config: defaultCustomConfig(),
@@ -92,8 +82,11 @@ export function defaultState(): AppState {
       sunline: false,
       grid: true,
       stars: true,
+      moon: true,
+      moonOrbit: true,
     },
     followEarth: true,
+    trueScale: false,
     viewMode: 'orbit',
     plotMode: 'year',
     yearsShown: 12,
@@ -113,14 +106,24 @@ function wrapHour(hour: number): number {
   return posMod(hour, 24);
 }
 
+// Fixed simulated-time slices limit frame-rate drift when formulas vary solar-day length.
+const MAX_STEP_HOURS = 1;
+// Cap slices so extreme speeds cannot make one frame unbounded.
+const MAX_STEPS = 64;
+
 /**
- * Advance the clock by `dtSeconds` of real time while playing.
- * `speed` is in absolute (orbital) hours per second. The orbital calendar advances
- * at one day per 24 absolute hours; the local solar time advances by one full day
- * (24 h) per solar day, which may be much faster or slower than the calendar.
+ * Advance by real seconds, using `speed` as absolute orbital hours per second.
+ * Local time advances 24 hours per configured solar day.
  */
 export function advanceTime(state: AppState, dtSeconds: number): void {
   const absHours = dtSeconds * state.speed;
+  if (!Number.isFinite(absHours) || absHours === 0) return;
+  const steps = Math.min(MAX_STEPS, Math.max(1, Math.ceil(Math.abs(absHours) / MAX_STEP_HOURS)));
+  const slice = absHours / steps;
+  for (let i = 0; i < steps; i++) advanceOnce(state, slice);
+}
+
+function advanceOnce(state: AppState, absHours: number): void {
   const rawDay = state.dayOfYear + absHours / 24;
   // Count whole orbits crossed so the accumulated longitude (and a precessing axis)
   // keeps advancing past each year's end instead of snapping back.
@@ -130,33 +133,30 @@ export function advanceTime(state: AppState, dtSeconds: number): void {
   const solarDay = solarDayHours(state.config, sunLongitudeDeg(state.dayOfYear), accumulatedSunLonDeg(state));
   if (Number.isFinite(solarDay) && solarDay > 0) {
     const next = wrapHour(state.timeOfDay + (absHours / solarDay) * 24);
-    // Guard against a pathological (astronomically fast) spin overflowing the step; never
-    // let a non-finite value stick to the clock.
+    // Do not let an extreme spin leave a non-finite clock value.
     if (Number.isFinite(next)) state.timeOfDay = next;
   }
 }
 
-/** The current state's accumulated-across-orbits Sun longitude (see `accumulatedLonDeg`). */
+/** Return the Sun longitude accumulated across completed orbits. */
 export function accumulatedSunLonDeg(state: AppState): number {
   return accumulatedLonDeg(state.orbit, state.dayOfYear);
 }
 
 /** Earth's spin angle (degrees) at the current instant. */
 export function currentSpinDeg(state: AppState): number {
-  const noon = noonSpinDeg(state.config, state.dayOfYear, state.lonDeg, accumulatedSunLonDeg(state));
-  // 15 deg of hour-angle per solar hour; 12:00 puts the Sun on the meridian. The sign
-  // follows the Sun's apparent motion (which way the hour angle runs with the clock).
-  const sign = apparentSolarSpinSign(state.config, sunLongitudeDeg(state.dayOfYear), accumulatedSunLonDeg(state));
-  return noon + sign * 15 * (state.timeOfDay - 12);
+  return spinAtLocalTime(
+    state.config,
+    state.dayOfYear,
+    state.lonDeg,
+    state.timeOfDay,
+    accumulatedSunLonDeg(state),
+  );
 }
 
 /**
- * Move the observation point without spinning the globe. A longitude change re-anchors local
- * solar noon (noonSpinDeg = raSun - lon), which would otherwise rotate the Earth to keep the
- * same local time; instead we shift the local-solar clock by the matching amount (15 deg of
- * longitude = 1 solar hour), so the Earth's absolute orientation is preserved and only the
- * observer moves. The new longitude genuinely has a different local time at the same instant.
- * Latitude does not affect the spin, so it needs no compensation.
+ * Move the observer while adjusting local time to preserve the globe's orientation.
+ * The site is also mirrored onto config so location formulas immediately see the move.
  */
 export function setObserverLocation(state: AppState, latDeg: number, lonDeg: number): void {
   const sign = apparentSolarSpinSign(
@@ -168,6 +168,13 @@ export function setObserverLocation(state: AppState, latDeg: number, lonDeg: num
   state.latDeg = latDeg;
   state.lonDeg = lonDeg;
   state.timeOfDay = posMod(state.timeOfDay + dLon / (sign * 15), 24);
+  syncSiteToConfig(state);
+}
+
+/** Mirror the observer onto config because orientation consumers do not receive AppState. */
+export function syncSiteToConfig(state: AppState): void {
+  state.config.siteLatDeg = state.latDeg;
+  state.config.siteLonDeg = state.lonDeg;
 }
 
 /** Format an hour value as HH:MM. */
