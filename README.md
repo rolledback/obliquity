@@ -13,11 +13,9 @@ Obliquity is an interactive web app for playing with how the Earth spins. The or
 - Compare the real Earth beside your version, same place and date.
 - See the Sun three ways: a daily arc, a year heatmap, and a felt-warmth climate curve.
 - Watch from a 3D orbit or a first-person sky view, anywhere on Earth.
+- See eclipses happen during your redefinition of the Earth's spin.
 - Jump to solstices, scrub time on the charts, or press play.
 - Start from chaos-tuned scenarios, then share your world with one link.
-
-The same place on the June solstice: the real Earth's familiar arc on the left, and a world tipped fully onto its side on the right, where the Sun simply never sets.
-
 ![Real Earth compared with a world tipped onto its side](docs/compare.png)
 
 The first-person sky view puts you on the ground, watching the Sun arc over a schematic horizon as the day plays out.
@@ -47,12 +45,14 @@ The expressions are not JavaScript. They are parsed by a tiny sandboxed evaluato
 | Name | Meaning |
 | --- | --- |
 | `phase` | Fraction around the orbit, 0 at the March equinox, wrapping at 1. |
-| `lon` | The Sun's ecliptic longitude this orbit, 0 to 360 degrees. |
+| `sol_lon` | The Sun's ecliptic longitude this orbit, 0 to 360 degrees. |
 | `day` | Day of the year, 1 to about 365. |
 | `year`, `t` | Elapsed time in years, accumulating across orbits so the world keeps evolving. |
 | `orbit` | Whole orbits completed so far. |
+| `lat` | The latitude you are standing at, degrees, positive north. |
+| `lon` | The longitude you are standing at, degrees, positive east. |
 
-A formula that uses only `phase`, `lon`, or `day` repeats every year. Bring in `year`, `t`, or `orbit` to make it drift from one orbit to the next; an irrational coefficient such as `0.05*sqrt(2)*year` makes it never exactly repeat.
+A formula that uses only `phase`, `sol_lon`, or `day` repeats every year. Bring in `year`, `t`, or `orbit` to make it drift from one orbit to the next; an irrational coefficient such as `0.05*sqrt(2)*year` makes it never exactly repeat.
 
 ### Functions and constants
 
@@ -74,4 +74,4 @@ For example, the Tumbling World uses a tilt of `65 + 30*wave(phase)` and a lean 
 
 ## Credits
 
-The Earth texture is NASA's public domain Blue Marble imagery. Built with Three.js and lil-gui.
+The Earth texture is NASA's public domain Blue Marble imagery, and the Moon's is NASA's public domain CGI Moon Kit, built from Lunar Reconnaissance Orbiter data. Built with Three.js and lil-gui.
