@@ -325,6 +325,20 @@ body {
 
 /* Active-scenario description: a thin, fixed-height strip so cycling scenarios never
    reflows the layout (which would resize the 3D canvas and stutter the animation). */
+.reroll {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #16203a;
+  color: var(--fg);
+  font: inherit;
+  padding: 1px 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.reroll:hover {
+  background: #1f2c4d;
+}
+
 #scenario-desc {
   height: 34px;
   padding: 4px 18px;
@@ -798,3 +812,33 @@ body {
     display: none !important;
   }
 }
+
+.transport-row {
+  display: flex;
+  gap: 6px;
+  padding: 4px 8px;
+}
+
+.transport-btn {
+  flex: 1;
+  padding: 3px 0;
+  font-size: 13px;
+  line-height: 1.2;
+  color: var(--text);
+  background: var(--panel-bg-2);
+  border: 1px solid #24304a;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.transport-btn:hover { background: #1a2438; }
+.transport-btn.is-on { background: #2b6cb0; border-color: #3f86d4; color: #fff; }
+
+.ro-solar { cursor: help; }
+.ro-solar::after {
+  content: '';
+  border-bottom: 1px dotted rgba(160, 176, 205, 0.5);
+  display: block;
+}
+
+.ro-wall { color: var(--text-dim); cursor: help; }

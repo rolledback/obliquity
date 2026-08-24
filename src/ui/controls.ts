@@ -1,9 +1,9 @@
 import { CALENDAR_DAYS } from '../astro/calendar';
 import { GUI } from 'lil-gui';
-import { AXIS_MODE_LABELS, cloneConfig } from '../astro/config';
+import { axisIsSecular, AXIS_MODE_LABELS, cloneConfig } from '../astro/config';
 import type { AxisMode, RotationConfig } from '../astro/config';
 import { compileFormula } from '../astro/formula';
-import { maxPoleStep } from '../astro/orientation';
+import { SMOOTH_POLE_STEP, maxPoleStep } from '../astro/orientation';
 import { spinReverses } from '../astro/daypath';
 import { CITIES, NOTABLE_DATES } from '../astro/presets';
 import { FORMULA_EXAMPLES } from '../formulaExamples';
@@ -12,8 +12,9 @@ import {
   SCENARIO_NAMES,
   applyScenario,
   scenarioDescription,
+  scenarioRerolls,
 } from '../scenarios';
-import type { AppState } from '../state';
+import type { AppState, Transport } from '../state';
 
 export interface ControlElements {
   left: HTMLElement;
@@ -26,6 +27,10 @@ export interface ControlElements {
 }
 
 export interface ControlHandlers {
+  /** Move the clock to the present. */
+  onJumpToNow?: () => void;
+  /** Move absolute time so the observer's clock reads this. */
+  onSetLocalTime?: (hour: number) => void;
   onChange: () => void;
   /** Jump to a visible total eclipse, or report that none was found. */
   onFindEclipse?: (type: 'solar' | 'lunar', backwards: boolean) => void;
@@ -81,6 +86,16 @@ export function buildControls(
     const text = scenarioDescription(name);
     els.scenarioDesc.textContent = text;
     els.scenarioDesc.title = text;
+    // A native select fires no change event when the same entry is picked again, so a
+    // scenario that rolls a new world each time needs its own way to be asked twice.
+    if (scenarioRerolls(name)) {
+      const again = document.createElement('button');
+      again.type = 'button';
+      again.className = 'reroll';
+      again.textContent = 'Roll again';
+      again.addEventListener('click', () => selectScenario(name));
+      els.scenarioDesc.append(' ', again);
+    }
   }
   showDescription(state.scenario);
 
@@ -118,7 +133,9 @@ export function buildControls(
     } else {
       applyScenario(state.config, name);
     }
-    state.orbit = 0;
+    // Only a world whose axis evolves with `year` wants to start at its own year zero.
+    // Rewinding an ordinary scenario would throw the calendar back to the epoch for nothing.
+    if (axisIsSecular(state.config)) state.orbit = 0;
     updateModeVisibility();
     syncFormulaDraft();
     refreshAllControllers();
@@ -147,8 +164,8 @@ export function buildControls(
     spin: state.config.spinFormula,
   };
   const FORMULA_HINT =
-    'Tilt and lean dir are degrees. Inputs: phase 0..1, lon 0..360, year/t (grows), ' +
-    'orbit, day, plus lat/site for where you are standing. Smooth helpers: ' +
+    'Tilt and lean dir are degrees. Inputs: phase 0..1, sol_lon 0..360, year/t (grows), ' +
+    'orbit, day, plus lat/lon for where you are standing. Smooth helpers: ' +
     'wave(x)=sin(2\u03C0x), sind, cosd, sat, smooth, lerp.';
   const SPIN_HINT =
     'Spin speed as a multiple of the period above: 1 is normal, below 1 slows the spin, ' +
@@ -218,7 +235,6 @@ export function buildControls(
     });
 
   // Rough formulas remain valid, but receive a non-blocking warning.
-  const SMOOTH_JUMP_LIMIT = 0.05; // About a 3 degree pole jump per quarter-degree.
   function validateFormulas(): boolean {
     const errs: string[] = [];
     const tiltErr = compileFormula(formulaDraft.tilt).error;
@@ -244,7 +260,7 @@ export function buildControls(
     probe.axisMode = 'formula';
     probe.tiltFormula = formulaDraft.tilt;
     probe.leanFormula = formulaDraft.lean;
-    return maxPoleStep(probe) > SMOOTH_JUMP_LIMIT
+    return maxPoleStep(probe) > SMOOTH_POLE_STEP
       ? 'Heads up: this formula jumps the Sun suddenly somewhere in the year (not smooth). It still runs, but for a glide use wave()/sind() or whole multiples at the year wrap.'
       : null;
   }
@@ -378,9 +394,47 @@ export function buildControls(
   const hourCtrl = time
     .add(state, 'timeOfDay', 0, 24, 0.05)
     .name('Local solar time')
-    .onChange(change);
-  const playCtrl = time.add(state, 'playing').name('Play');
-  const speedCtrl = time.add(state, 'speed', 0, 600, 1).name('Speed (sim h/s)');
+    .onChange((v: number) => {
+      handlers.onSetLocalTime?.(v);
+      change();
+    });
+  const transportRow = document.createElement('div');
+  transportRow.className = 'transport-row';
+  const transportBtns: Partial<Record<Transport, HTMLButtonElement>> = {};
+  const setTransport = (mode: Transport) => {
+    // Pressing the active mode returns to paused, so each button toggles.
+    state.transport = state.transport === mode ? 'paused' : mode;
+    refreshTransport();
+    change();
+  };
+  const refreshTransport = () => {
+    for (const [mode, btn] of Object.entries(transportBtns)) {
+      btn!.classList.toggle('is-on', state.transport === mode);
+    }
+    const playBtn = transportBtns.play!;
+    playBtn.textContent = state.transport === 'play' ? '\u23F8' : '\u25B6';
+    playBtn.title = state.transport === 'play' ? 'Pause' : 'Play';
+  };
+  for (const [mode, glyph, title] of [
+    ['rewind', '\u23EA', 'Rewind at twice the current speed'],
+    ['play', '\u25B6', 'Play'],
+    ['ff', '\u23E9', 'Fast forward at twice the current speed'],
+  ] as [Transport, string, string][]) {
+    const btn = document.createElement('button');
+    btn.className = 'transport-btn';
+    btn.textContent = glyph;
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+    btn.addEventListener('click', () => setTransport(mode));
+    transportBtns[mode] = btn;
+    transportRow.append(btn);
+  }
+  time
+    .add({ now: () => handlers.onJumpToNow?.() }, 'now')
+    .name('Jump to now');
+  time.$children.append(transportRow);
+  refreshTransport();
+  const speedCtrl = time.add(state, 'speed', -600, 600, 1).name('Speed (sim h/s)');
   const yearsCtrl = time
     .add(state, 'yearsShown', 1, 24, 1)
     .name('Years shown')
@@ -407,6 +461,7 @@ export function buildControls(
     view.add(state.show, 'marker').name('Location pin'),
     view.add(state.show, 'subsolar').name('Sub-solar point'),
     view.add(state.show, 'sunline').name('Earth-to-Sun line'),
+    view.add(state.show, 'moonline').name('Earth-to-Moon line'),
     view.add(state.show, 'grid').name('Ecliptic grid'),
     view.add(state.show, 'stars').name('Stars'),
     view.add(state.show, 'moonOrbit').name("Moon's orbit"),
@@ -417,8 +472,10 @@ export function buildControls(
   // Sky display settings are read every frame and need no change callback.
   const skyViewCtrls = [
     view.add(state, 'followSun').name('Follow the Sun'),
+    view.add(state, 'followMoon').name('Follow the Moon'),
     view.add(state, 'skyGrid').name('Sky grid'),
     view.add(state, 'sunTrail').name('Sun trail'),
+    view.add(state, 'moonTrail').name('Moon trail'),
   ];
   function updateViewVisibility() {
     const orbit = state.viewMode === 'orbit';
@@ -492,7 +549,7 @@ export function buildControls(
       hourCtrl.updateDisplay();
     },
     refreshPlay() {
-      playCtrl.updateDisplay();
+      refreshTransport();
     },
     refreshSpeed() {
       speedCtrl.updateDisplay();
@@ -501,6 +558,7 @@ export function buildControls(
       updateModeVisibility();
       syncFormulaDraft();
       refreshAllControllers();
+      refreshTransport(); // custom DOM, so refreshAllControllers does not reach it
     },
     setViewContext() {
       updateViewVisibility();

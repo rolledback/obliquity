@@ -168,6 +168,13 @@ export function discToMapPixel(
 
 /** Draw the ground-view Moon with its phase, surface, and eclipse bite. */
 export class SkyMoon {
+  /** Where the Moon was last drawn, which near the Sun is not where it truly is. */
+  private drawnDir: THREE.Vector3 | null = null;
+
+  /** The direction the sprite was last placed at, or null when it is not drawn. */
+  get lastDrawnDir(): THREE.Vector3 | null {
+    return this.drawnDir;
+  }
   private moon: THREE.Sprite;
   private moonMat!: THREE.SpriteMaterial;
   private phaseCache = new Map<string, THREE.CanvasTexture>();
@@ -343,17 +350,20 @@ export class SkyMoon {
   ) {
     if (!m) {
       this.moon.visible = false;
+      this.drawnDir = null;
       return;
     }
     // Cull only after the whole enlarged disc sets; ground depth hides the visible portion.
     if (fullySet(m.altDeg, m.radiusDeg)) {
       this.moon.visible = false;
+      this.drawnDir = null;
       return;
     }
 
     const trueDir = dirFromAltAz(m.altDeg, m.azDeg);
     const sunDir = sunPos.clone().normalize();
     const drawnDir = eclipseMagnifiedDir(sunDir, trueDir);
+    this.drawnDir = drawnDir.clone();
     const pos = drawnDir.multiplyScalar(MOON_SHELL_RADIUS);
     this.moon.position.copy(pos);
     this.moon.visible = true;

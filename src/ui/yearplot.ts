@@ -4,6 +4,7 @@ import { solarDayHours } from '../astro/daypath';
 import { accumulatedLonDeg, axisConfigKey, sunLongitudeDeg, spinConfigKey } from '../astro/config';
 import type { RotationConfig } from '../astro/config';
 import { DEG, RAD, clamp, posMod } from '../astro/vec';
+import { calendarYear } from '../astro/presets';
 import { drawNowMarker, drawYearStrip, font, formatHours, lerp3, sampleRamp, TIME_OF_DAY_TICKS, type RGB } from './draw';
 import { Plot, alignedSpanStart, orbitSlot, pickDayOrbit } from './plot';
 import type { TimePick } from './plot';
@@ -21,6 +22,8 @@ export interface YearPlotInput {
   orbit: number;
   /** Number of years to lay side by side. */
   years: number;
+  /** Total solar eclipses visible from here, marked on the map. */
+  eclipses?: { orbit: number; dayOfYear: number; timeOfDay: number }[];
 }
 
 interface YearStats {
@@ -73,6 +76,7 @@ export class YearPlot extends Plot {
     ctx.drawImage(this.heat, PAD.left, PAD.top, plotW, plotH);
 
     this.drawAxes(ctx, w, h, plotW, plotH, years);
+    this.drawEclipses(ctx, input, plotW, plotH, years);
     this.drawNow(ctx, input, plotW, plotH, years);
     // Cache stats for the highlighted year rather than sweeping its days every frame.
     const statOrbit = Math.round(input.orbit);
@@ -203,12 +207,49 @@ export class YearPlot extends Plot {
       ctx.fillText(label, PAD.left - 6, y);
     }
 
+    const spanStart = alignedSpanStart(this.orbit, years);
     drawYearStrip(ctx, PAD.left, plotW, PAD.top, plotH, h - PAD.bottom, years, {
+      label: (slot) => String(calendarYear(spanStart + slot)),
       separatorColor: (y) => (y > 0 ? 'rgba(220,228,245,0.3)' : null),
       gridColor: 'rgba(220,228,245,0.12)',
       labelColor: 'rgba(160,176,205,0.85)',
       skipFirstGridline: years > 1,
     });
+  }
+
+  // A black cross at each total solar eclipse: the one moment the Sun's height stops meaning
+  // what the colour says, so it earns a mark the heat map cannot express.
+  private drawEclipses(
+    ctx: CanvasRenderingContext2D,
+    input: YearPlotInput,
+    plotW: number,
+    plotH: number,
+    years: number,
+  ) {
+    const marks = input.eclipses;
+    if (!marks || marks.length === 0) return;
+    const arm = 5;
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const m of marks) {
+      const slot = orbitSlot(m.orbit, years);
+      if (slot < 0 || slot >= years) continue;
+      const dayFrac = Math.min(Math.max((m.dayOfYear - 1) / COLS, 0), 1);
+      const x = PAD.left + ((slot + dayFrac) / years) * plotW;
+      const y = PAD.top + (posMod(m.timeOfDay, 24) / 24) * plotH;
+      // A pale halo first, so the cross reads against both the dark night and the bright noon.
+      for (const [width, style] of [[4, 'rgba(255,255,255,0.75)'], [2, '#000']] as [number, string][]) {
+        ctx.lineWidth = width;
+        ctx.strokeStyle = style;
+        ctx.beginPath();
+        ctx.moveTo(x - arm, y - arm);
+        ctx.lineTo(x + arm, y + arm);
+        ctx.moveTo(x + arm, y - arm);
+        ctx.lineTo(x - arm, y + arm);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
   }
 
   private drawNow(

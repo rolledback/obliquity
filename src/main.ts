@@ -7,12 +7,16 @@ import { SkyPlot } from './ui/skyplot';
 import { YearPlot } from './ui/yearplot';
 import { ClimatePlot } from './ui/climateplot';
 import type { TimePick } from './ui/plot';
+import { alignedSpanStart } from './ui/plot';
 import { buildControls } from './ui/controls';
 import { LocationMap } from './ui/locationmap';
 import { BottomStrip } from './ui/bottomStrip';
 import {
   accumulatedSunLonDeg,
   advanceTime,
+  setLocalSolarTime,
+  setToNow,
+  timeRate,
   clockLabel,
   currentSpinDeg,
   defaultState,
@@ -21,10 +25,10 @@ import {
 } from './state';
 import { storageGet, storageSet } from './storage';
 import { applyShare, buildShareUrl, parseShareFromUrl } from './share';
-import { REALISTIC, sunLongitudeDeg } from './astro/config';
+import { REALISTIC, axisConfigKey, spinConfigKey, sunLongitudeDeg } from './astro/config';
 import type { RotationConfig } from './astro/config';
-import { CALENDAR_DAYS, absDaysFrom } from './astro/calendar';
-import { computeDayPath, earthMatrixAtLocalTime, solarDayHours } from './astro/daypath';
+import { CALENDAR_DAYS, absDaysFrom, dateFromAbsDays } from './astro/calendar';
+import { computeDayPath, earthMatrixAtLocalTime, localSolarTimeAt, solarDayHours } from './astro/daypath';
 import { sunAltAzAt, directionAltAz } from './astro/sun';
 import { sunDirEcliptic } from './astro/orientation';
 import { moonStateAt, moonTopocentric, phaseGlyph, topocentricIlluminated } from './astro/moon';
@@ -32,7 +36,7 @@ import { lunarEclipseAt, solarEclipseAt, solarShadowCentreKm } from './astro/ecl
 import { findNextEclipse } from './astro/eclipseFinder';
 import { seasonCycle, warmthAt } from './astro/season';
 import { compass16 } from './ui/draw';
-import { dayOfYearLabel } from './astro/presets';
+import { calendarLabel } from './astro/presets';
 import { posMod, clamp, scale as scaleV3 } from './astro/vec';
 
 const REALISTIC_COLOR = '#ffce54';
@@ -73,6 +77,8 @@ const state = defaultState();
 // Apply shared rotation settings before building their controls.
 const incomingShare = parseShareFromUrl();
 if (incomingShare) applyShare(state, incomingShare);
+// Start at the present, so the sky matches what is outside the window.
+setToNow(state);
 // Location-aware formulas need the shared location before their first validation.
 syncSiteToConfig(state);
 const scene = new Scene3D(sceneEl);
@@ -126,6 +132,42 @@ const DAY_CAPTION = 'Sun\u2019s height in the sky, midnight to midnight';
 const YEAR_CAPTION = 'Sun\u2019s height across the whole year';
 const CLIMATE_CAPTION = 'Felt warmth through the year (Sun-driven, with thermal lag)';
 
+// A total eclipse at one spot is rare, so this usually finds nothing; searching every frame
+// would still cost the whole hunt, hence the cache.
+const eclipseMarkCache = new Map<string, { orbit: number; dayOfYear: number; timeOfDay: number }[]>();
+
+function totalEclipseMarks(
+  config: RotationConfig,
+  latDeg: number,
+  lonDeg: number,
+  orbit: number,
+  years: number,
+): { orbit: number; dayOfYear: number; timeOfDay: number }[] {
+  const spanStart = alignedSpanStart(orbit, years);
+  const key = `${axisConfigKey(config)}|${spinConfigKey(config)}|${latDeg}|${lonDeg}|${spanStart}|${years}`;
+  const hit = eclipseMarkCache.get(key);
+  if (hit) return hit;
+
+  const marks: { orbit: number; dayOfYear: number; timeOfDay: number }[] = [];
+  const endAbs = absDaysFrom(spanStart + years, 1);
+  let searchOrbit = spanStart;
+  let searchDay = 1;
+  for (let i = 0; i < 64; i++) {
+    const found = findNextEclipse('solar', config, latDeg, lonDeg, searchOrbit, searchDay, {
+      kinds: ['total'],
+      maxYears: years + 1,
+      clock: (t) => localSolarTimeAt(config, t, lonDeg),
+    });
+    if (!found || found.absDays >= endAbs) break;
+    marks.push({ orbit: found.orbit, dayOfYear: found.dayOfYear, timeOfDay: found.timeOfDay });
+    searchOrbit = found.orbit;
+    searchDay = found.dayOfYear + 0.05;
+  }
+  if (eclipseMarkCache.size > 24) eclipseMarkCache.clear();
+  eclipseMarkCache.set(key, marks);
+  return marks;
+}
+
 function recomputePlots() {
   const { dayOfYear, latDeg, lonDeg, timeOfDay, orbit } = state;
   const axisPhase = accumulatedSunLonDeg(state);
@@ -134,7 +176,17 @@ function recomputePlots() {
 
   if (state.plotMode === 'year') {
     const years = Math.max(1, Math.round(state.yearsShown));
-    for (const p of shown) p.year.render({ config: p.config, latDeg, dayOfYear, timeOfDay, orbit, years });
+    for (const p of shown) {
+      p.year.render({
+        config: p.config,
+        latDeg,
+        dayOfYear,
+        timeOfDay,
+        orbit,
+        years,
+        eclipses: totalEclipseMarks(p.config, latDeg, lonDeg, orbit, years),
+      });
+    }
     return;
   }
 
@@ -250,6 +302,7 @@ function updateScene(moonMoment: MoonMoment | null) {
   } else {
     const warmth = warmthAt(state.config, state.latDeg, state.orbit, state.dayOfYear);
     skyView.setTrailEnabled(state.sunTrail);
+    skyView.setMoonTrailEnabled(state.moonTrail);
     skyView.setGridVisible(state.skyGrid);
     const aa = currentAltAz();
     let moonState: SkyMoonState | undefined;
@@ -288,6 +341,7 @@ function updateScene(moonMoment: MoonMoment | null) {
       azDeg: aa.azDeg,
       warmth,
       followSun: state.followSun,
+      followMoon: state.followMoon,
       moon: moonState,
       sunRadiusDeg,
       solarObscuration,
@@ -304,7 +358,6 @@ function updateHeading() {
 }
 
 function updateReadout(moonMoment: MoonMoment | null) {
-  const yearLabel = state.orbit > 0 ? `, Year ${state.orbit + 1}` : '';
   const { altDeg, azDeg } = currentAltAz();
   const solar = solarDayHours(state.config, sunLongitudeDeg(state.dayOfYear), accumulatedSunLonDeg(state));
   const solarLabel = Number.isFinite(solar) ? `${solar.toFixed(2)} h` : 'none';
@@ -318,7 +371,9 @@ function updateReadout(moonMoment: MoonMoment | null) {
       `${Math.round(m.moon.illuminated * 100)}%, ${up}`;
   }
   readoutEl.innerHTML =
-    `<b>${dayOfYearLabel(state.dayOfYear)}${yearLabel}</b> ${clockLabel(state.timeOfDay)} ` +
+    `<b>${calendarLabel(state.orbit, state.dayOfYear, state.lonDeg)}</b> ` +
+    `<span class="ro-wall" title="The same moment on your own clock, in your time zone.">${wallClockLabel(state.orbit, state.dayOfYear)}</span> ` +
+    `<span class="ro-solar" title="Local apparent solar time: noon is when the Sun is highest where the pin is. It differs from clock time by daylight saving and by how far the pin sits from its time zone's meridian.">${clockLabel(state.timeOfDay)} solar</span> ` +
     `&middot; Sun <b>${altLabel}</b>, az ${azDeg.toFixed(0)}\u00B0 ` +
     `&middot; solar day <b>${solarLabel}</b>${moonLabel}`;
 }
@@ -372,6 +427,19 @@ noticeModalEl.addEventListener('click', (e) => {
   if (e.target === noticeModalEl) closeNotice();
 });
 
+/** The simulated instant as your own clock would read it, zone and all. */
+function wallClockLabel(orbit: number, dayOfYear: number): string {
+  const d = dateFromAbsDays(absDaysFrom(orbit, dayOfYear));
+  return d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+function jumpToNow(): void {
+  state.transport = 'paused';
+  setToNow(state);
+  controls.refreshAll();
+  applyAll();
+}
+
 /** Jump to a visible total eclipse and pause there. */
 function jumpToEclipse(type: 'solar' | 'lunar', backwards: boolean): void {
   // Fixed locations may wait centuries for totality.
@@ -383,7 +451,14 @@ function jumpToEclipse(type: 'solar' | 'lunar', backwards: boolean): void {
     state.lonDeg,
     state.orbit,
     state.dayOfYear,
-    { backwards, maxYears: MAX_YEARS, kinds: ['total'] },
+    {
+      backwards,
+      maxYears: MAX_YEARS,
+      kinds: ['total'],
+      // Keep the observer where they actually are, rather than wherever on their parallel
+      // the shadow happens to fall.
+      clock: (t) => localSolarTimeAt(state.config, t, state.lonDeg),
+    },
   );
   if (!hit) {
     showNotice(
@@ -395,7 +470,7 @@ function jumpToEclipse(type: 'solar' | 'lunar', backwards: boolean): void {
     );
     return;
   }
-  state.playing = false;
+  state.transport = 'paused';
   state.orbit = hit.orbit;
   state.dayOfYear = hit.dayOfYear;
   state.timeOfDay = hit.timeOfDay;
@@ -408,7 +483,12 @@ function jumpToEclipse(type: 'solar' | 'lunar', backwards: boolean): void {
 const controls = buildControls(
   { left: guiLeft, right: guiContainer, ...scenarioEls },
   state,
-  { onChange: applyAll, onFindEclipse: jumpToEclipse },
+  {
+    onChange: applyAll,
+    onFindEclipse: jumpToEclipse,
+    onJumpToNow: jumpToNow,
+    onSetLocalTime: (h) => setLocalSolarTime(state, h),
+  },
 );
 
 viewToggleEl.querySelectorAll('button').forEach((b) => {
@@ -488,9 +568,10 @@ function currentSolarDayHours(): number {
 
 /** Day/night cycles per real second the Sky view would show now (0 if it cannot flash). */
 function skyFlashRate(): number {
-  if (state.viewMode !== 'ground' || !state.playing || state.speed <= 0) return 0;
+  const rate = Math.abs(timeRate(state));
+  if (state.viewMode !== 'ground' || rate <= 0) return 0;
   const solar = currentSolarDayHours();
-  return solar > 0 ? state.speed / solar : 0;
+  return solar > 0 ? rate / solar : 0;
 }
 
 /** Prompt on the rising edge, then re-arm after the flash rate falls. */
@@ -527,16 +608,18 @@ function resolveFlash(choice: FlashChoice) {
   } else if (choice === 'slow') {
     // Pause if even the slowest nonzero speed exceeds the safe flash rate.
     const solar = currentSolarDayHours();
-    const safeSpeed = Math.floor(SAFE_FLASH_HZ * solar);
+    // Rewind and fast forward scale the speed, so the cap has to account for them.
+    const factor = Math.abs(timeRate(state)) / Math.max(1e-9, Math.abs(state.speed));
+    const safeSpeed = Math.floor((SAFE_FLASH_HZ * solar) / Math.max(1, factor));
     if (safeSpeed >= 1) {
-      state.speed = Math.min(safeSpeed, state.speed);
+      state.speed = Math.sign(state.speed) * Math.min(safeSpeed, Math.abs(state.speed));
       controls.refreshSpeed();
     } else {
-      state.playing = false;
+      state.transport = 'paused';
       controls.refreshPlay();
     }
   } else {
-    state.playing = false;
+    state.transport = 'paused';
     controls.refreshPlay();
   }
   wasFlashing = skyFlashRate() >= FLASH_HZ;
@@ -714,7 +797,7 @@ function frame(now: number) {
   // Check the rising edge before time advances into the flashing state.
   updateFlashGuard();
 
-  if (state.playing && state.speed > 0 && !scrubbing && !flashModalOpen) {
+  if (timeRate(state) !== 0 && !scrubbing && !flashModalOpen) {
     advanceTime(state, dt);
     controls.refreshTime();
     recomputePlots();

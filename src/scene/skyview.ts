@@ -5,6 +5,7 @@ import { TerrainMap, loadTerrainMap } from './terrain';
 import { smoothstep, DEG, posMod } from '../astro/vec';
 import { displayPixelRatio } from '../displayRatio';
 import { SkyMoon } from './skyMoon';
+import { SkyTrail } from './skyTrail';
 import type { SkyMoonState } from './skyMoon';
 import {
   DOME_RADIUS,
@@ -70,6 +71,7 @@ export interface SkyState {
   warmth?: number;
   /** Ease the camera to keep the Sun centred (paused while the user is dragging). */
   followSun?: boolean;
+  followMoon?: boolean;
   /** Apparent radius of the Sun in degrees; defaults to the real value. */
   sunRadiusDeg?: number;
   /** The Moon, or undefined to leave it out of the sky entirely. */
@@ -116,21 +118,8 @@ export class SkyView {
   private gridLines!: THREE.LineSegments;
   private gridMat!: THREE.LineBasicMaterial;
 
-  // Soft points and a thin core form the fading Sun trail.
-  private trail!: THREE.Points;
-  private trailLine!: THREE.Line; // thin core through the dots so it reads continuous at speed
-  private trailGeo!: THREE.BufferGeometry;
-  private trailMat!: THREE.ShaderMaterial;
-  private trailLineMat!: THREE.ShaderMaterial;
-  private trailPos!: Float32Array;
-  private trailAlpha!: Float32Array;
-  private trailPoints: THREE.Vector3[] = [];
-  private trailEnabled = false;
-  private readonly trailMax = 320; // most points retained (older ones drop off the tail)
-  private readonly trailRadius = DOME_RADIUS * 0.9; // just inside the Sun's shell
-  private readonly trailDotPx = 13; // on-screen diameter of each soft trail dot (CSS px)
-  private readonly trailMinSepCos = Math.cos(0.5 * DEG); // record once moved ~0.5deg
-  private readonly trailBreakCos = Math.cos(30 * DEG); // a bigger jump restarts the trail
+  private sunTrail!: SkyTrail;
+  private moonTrail!: SkyTrail;
 
   private groundColors!: THREE.BufferAttribute;
   private readonly groundRadii = [0, 1, 2, 4, 8, 16, 32, 64, 128, 280, 700, DOME_RADIUS * 4];
@@ -144,7 +133,7 @@ export class SkyView {
   private dragging = false;
   private lastX = 0;
   private lastY = 0;
-  private lastFollowMs = 0; // timestamp of the previous follow-Sun ease, for frame-rate-independent dt
+  private lastFollowMs = 0; // previous follow ease, Sun or Moon, for frame-rate-independent dt
 
   // Reused by updateColors to avoid per-frame allocation.
   private cZenith = new THREE.Color();
@@ -234,9 +223,13 @@ export class SkyView {
     this.sunGlow.renderOrder = 2;
     this.sun.renderOrder = 2;
 
-    this.trail = this.makeTrail();
-    this.scene.add(this.trail);
-    this.scene.add(this.trailLine); // the thin core, built alongside the points in makeTrail
+    const ratio = this.renderer.getPixelRatio();
+    this.sunTrail = new SkyTrail(DOME_RADIUS * 0.9, 0xffd884, ratio);
+    this.moonTrail = new SkyTrail(DOME_RADIUS * 0.88, 0xbcd0ee, ratio);
+    for (const t of [this.sunTrail, this.moonTrail]) {
+      this.scene.add(t.points);
+      this.scene.add(t.line);
+    }
 
     this.addCompassLabels();
 
@@ -725,14 +718,20 @@ export class SkyView {
     // Share brightness so Moon opacity cannot drift from the sky state.
     const dayF = skyDayFactor(state.altDeg, obscuration);
     this.skyMoon.update(state.moon, p, obscuration, dayF);
+    // Follow the DRAWN Moon: near the Sun the sprite is pushed aside so partial eclipses do
+    // not look total, and a trail on the true position detaches and runs into the Sun.
+    const drawnMoon = this.skyMoon.lastDrawnDir;
+    if (drawnMoon) this.moonTrail.pushDir(drawnMoon);
     this.updateColors(state.altDeg, obscuration);
 
-    if (state.followSun) this.easeCameraToSun(state.altDeg, state.azDeg);
+    // Following the Moon wins when both are on, since it is the harder thing to keep in view.
+    const follow = state.followMoon && state.moon ? state.moon : state.followSun ? state : null;
+    if (follow) this.easeCameraTo(follow.altDeg, follow.azDeg);
     else this.lastFollowMs = 0; // reset so re-enabling starts from a small dt
   }
 
-  // Ease toward the Sun by elapsed time, without fighting an active drag.
-  private easeCameraToSun(altDeg: number, azDeg: number) {
+  // Ease toward a target by elapsed time, without fighting an active drag.
+  private easeCameraTo(altDeg: number, azDeg: number) {
     if (this.dragging) {
       this.lastFollowMs = 0;
       return;
@@ -749,128 +748,21 @@ export class SkyView {
     this.applyLook();
   }
 
-  // Preallocate fading trail points and a shared thin core for gaps at high playback speed.
-  private makeTrail(): THREE.Points {
-    const N = this.trailMax;
-    this.trailPos = new Float32Array(N * 3);
-    this.trailAlpha = new Float32Array(N);
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(this.trailPos, 3));
-    geo.setAttribute('aAlpha', new THREE.BufferAttribute(this.trailAlpha, 1));
-    geo.setDrawRange(0, 0);
-    this.trailGeo = geo;
-    this.trailMat = new THREE.ShaderMaterial({
-      uniforms: {
-        uColor: { value: new THREE.Color(0xffd884) },
-        // gl_PointSize uses framebuffer pixels, not CSS pixels.
-        uSize: { value: this.trailDotPx * this.renderer.getPixelRatio() },
-      },
-      vertexShader: `
-        attribute float aAlpha;
-        uniform float uSize;
-        varying float vAlpha;
-        void main() {
-          vAlpha = aAlpha;
-          gl_PointSize = uSize;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        uniform vec3 uColor;
-        varying float vAlpha;
-        void main() {
-          // Soft round disc: solid core, quick falloff at the rim.
-          float d = length(gl_PointCoord - vec2(0.5));
-          float a = vAlpha * smoothstep(0.5, 0.32, d);
-          if (a <= 0.001) discard;
-          gl_FragColor = vec4(uColor, a);
-        }
-      `,
-      transparent: true,
-      depthWrite: false,
-      depthTest: true, // let the ground occlude any part below the horizon
-    });
-    const points = new THREE.Points(geo, this.trailMat);
-    points.frustumCulled = false; // positions are mutated in place; skip stale-bounds culling
-    points.renderOrder = 1;
-    points.visible = false;
-
-    // WebGL's 1px line keeps separated trail dots visually connected.
-    this.trailLineMat = new THREE.ShaderMaterial({
-      uniforms: { uColor: { value: new THREE.Color(0xffd884) } },
-      vertexShader: `
-        attribute float aAlpha;
-        varying float vAlpha;
-        void main() {
-          vAlpha = aAlpha;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        uniform vec3 uColor;
-        varying float vAlpha;
-        void main() {
-          gl_FragColor = vec4(uColor, vAlpha);
-        }
-      `,
-      transparent: true,
-      depthWrite: false,
-      depthTest: true,
-    });
-    const line = new THREE.Line(geo, this.trailLineMat);
-    line.frustumCulled = false;
-    line.renderOrder = 1;
-    line.visible = false;
-    this.trailLine = line;
-
-    return points;
-  }
-
-  /** Turn the Sun trail on or off; turning it off discards the recorded path. */
   setTrailEnabled(on: boolean) {
-    if (on === this.trailEnabled) return;
-    this.trailEnabled = on;
-    this.trail.visible = on;
-    this.trailLine.visible = on;
-    if (!on) this.clearTrail();
+    this.sunTrail.setEnabled(on);
   }
 
-  /** Forget the recorded path (used on date/scenario/location jumps and view changes). */
+  setMoonTrailEnabled(on: boolean) {
+    this.moonTrail.setEnabled(on);
+  }
+
   clearTrail() {
-    this.trailPoints.length = 0;
-    this.trailGeo.setDrawRange(0, 0);
+    this.sunTrail.clear();
+    this.moonTrail.clear();
   }
 
-  /** Add a spaced trail point, restarting after jumps larger than 30 degrees. */
   pushTrail(altDeg: number, azDeg: number) {
-    if (!this.trailEnabled) return;
-    const dir = dirFromAltAz(altDeg, azDeg).multiplyScalar(this.trailRadius);
-    const pts = this.trailPoints;
-    if (pts.length > 0) {
-      const last = pts[pts.length - 1];
-      const cos = last.dot(dir) / (this.trailRadius * this.trailRadius);
-      if (cos > this.trailMinSepCos) return; // not moved enough yet
-      if (cos < this.trailBreakCos) this.clearTrail(); // discontinuity: start fresh
-    }
-    pts.push(dir);
-    if (pts.length > this.trailMax) pts.shift();
-    this.writeTrail();
-  }
-
-  // Copy points to GPU buffers with alpha increasing toward the newest.
-  private writeTrail() {
-    const pts = this.trailPoints;
-    const n = pts.length;
-    for (let i = 0; i < n; i++) {
-      const p = pts[i];
-      this.trailPos[i * 3] = p.x;
-      this.trailPos[i * 3 + 1] = p.y;
-      this.trailPos[i * 3 + 2] = p.z;
-      this.trailAlpha[i] = n > 1 ? i / (n - 1) : 1;
-    }
-    this.trailGeo.setDrawRange(0, n);
-    (this.trailGeo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-    (this.trailGeo.attributes.aAlpha as THREE.BufferAttribute).needsUpdate = true;
+    this.sunTrail.push(altDeg, azDeg);
   }
 
   /** The compass azimuth and altitude the camera is currently looking toward. */
@@ -946,7 +838,9 @@ export class SkyView {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     // Track pixel ratio to keep trail dots at a fixed CSS size.
-    this.trailMat.uniforms.uSize.value = this.trailDotPx * this.renderer.getPixelRatio();
+    const ratio = this.renderer.getPixelRatio();
+    this.sunTrail.setPixelRatio(ratio);
+    this.moonTrail.setPixelRatio(ratio);
   }
 }
 // Tileable dark-water texture with low crossing swells and brighter crests.

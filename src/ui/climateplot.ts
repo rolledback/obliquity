@@ -1,7 +1,7 @@
 import { CALENDAR_DAYS } from '../astro/calendar';
 import { seasonSpan } from '../astro/season';
 import type { SeasonSpan } from '../astro/season';
-import { dayOfYearLabel } from '../astro/presets';
+import { calendarYear, dayOfYearLabel } from '../astro/presets';
 import { clamp, posMod } from '../astro/vec';
 import { drawNowMarker, drawYearStrip, font, sampleRamp, type RGB } from './draw';
 import { Plot, alignedSpanStart, orbitSlot, pickDayOrbit } from './plot';
@@ -76,7 +76,7 @@ export class ClimatePlot extends Plot {
       ctx.fillRect(PAD.left + px, y, 1, baseY - y);
     }
 
-    this.drawAxes(ctx, h, plotW, plotH, years);
+    this.drawAxes(ctx, h, plotW, plotH, years, span.startOrbit);
 
     ctx.beginPath();
     for (let px = 0; px <= plotW; px++) {
@@ -120,6 +120,7 @@ export class ClimatePlot extends Plot {
     plotW: number,
     plotH: number,
     years: number,
+    startOrbit: number,
   ) {
     ctx.font = font(10);
 
@@ -133,6 +134,7 @@ export class ClimatePlot extends Plot {
     ctx.restore();
 
     drawYearStrip(ctx, PAD.left, plotW, PAD.top, plotH, h - PAD.bottom, years, {
+      label: (slot) => String(calendarYear(startOrbit + slot)),
       separatorColor: (y) => (y === 0 ? 'rgba(220,228,245,0.1)' : 'rgba(220,228,245,0.28)'),
       gridColor: 'rgba(220,228,245,0.08)',
       labelColor: 'rgba(160,176,205,0.85)',

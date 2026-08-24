@@ -7,6 +7,7 @@ import {
   sunDirEcliptic,
 } from '../astro/orientation';
 import { sunLongitudeDeg } from '../astro/config';
+import { sunDistanceKmAtLonDeg } from '../astro/calendar';
 import type { RotationConfig } from '../astro/config';
 import { matVec, geographicUnit } from '../astro/vec';
 import type { Mat3, V3 } from '../astro/vec';
@@ -67,9 +68,35 @@ const MOON_TINT = 0xffffff;
 
 const STAR_SHELL_THICKNESS = 1 / 3;
 
+/**
+ * Segments keeping the drawn polygon within 1/50 of an Earth radius of the true circle.
+ * A fixed 128 cut the corner by 7 Earth radii at true scale, so the Earth sat off its orbit.
+ */
+function ringSegments(radius: number): number {
+  const tolerance = EARTH_RADIUS / 50;
+  const needed = Math.PI * Math.sqrt(radius / (2 * tolerance));
+  return Math.min(4096, Math.max(128, Math.ceil(needed)));
+}
+
+/**
+ * The Earth's orbit is an ellipse with the Sun at a focus, so the ring is swept from the
+ * same distance law the physics uses rather than drawn as a circle.
+ */
+function buildOrbitGeometry(semiMajor: number): THREE.BufferGeometry {
+  const pts: THREE.Vector3[] = [];
+  const seg = ringSegments(semiMajor);
+  for (let i = 0; i < seg; i++) {
+    const a = (i / seg) * Math.PI * 2;
+    // A ring point at ecliptic angle a is where the Earth sits when the Sun is opposite it.
+    const r = semiMajor * (sunDistanceKmAtLonDeg((a * 180) / Math.PI + 180) / AU_KM);
+    pts.push(new THREE.Vector3(Math.cos(a) * r, Math.sin(a) * r, 0));
+  }
+  return new THREE.BufferGeometry().setFromPoints(pts);
+}
+
 function buildRingGeometry(radius: number): THREE.BufferGeometry {
   const pts: THREE.Vector3[] = [];
-  const seg = 128;
+  const seg = ringSegments(radius);
   for (let i = 0; i < seg; i++) {
     const a = (i / seg) * Math.PI * 2;
     pts.push(new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0));
@@ -137,6 +164,7 @@ export class Scene3D {
   private markerStick: THREE.Mesh;
   private subsolar: THREE.Mesh;
   private sunLine: THREE.Line;
+  private moonLine: THREE.Line;
   private grid: THREE.PolarGridHelper;
   private stars: THREE.Points;
   private sunLight: THREE.PointLight;
@@ -198,7 +226,10 @@ export class Scene3D {
     this.equator = this.buildRing(EARTH_RADIUS * 1.001, 0x5ec8ff);
     this.scene.add(this.equator);
 
-    this.orbit = this.buildRing(DIAGRAM_SCALE.orbitRadius, 0x39507a);
+    this.orbit = new THREE.LineLoop(
+      buildOrbitGeometry(DIAGRAM_SCALE.orbitRadius),
+      new THREE.LineBasicMaterial({ color: 0x39507a }),
+    );
     this.scene.add(this.orbit);
 
     this.marker = new THREE.Mesh(
@@ -229,6 +260,13 @@ export class Scene3D {
     // Mutable endpoints leave stale bounds, so frustum culling can hide the line.
     this.sunLine.frustumCulled = false;
     this.scene.add(this.sunLine);
+
+    this.moonLine = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineBasicMaterial({ color: 0x8a93a8 }),
+    );
+    this.moonLine.frustumCulled = false;
+    this.scene.add(this.moonLine);
 
     this.grid = this.makeEclipticGrid(DIAGRAM_SCALE.orbitRadius);
     this.scene.add(this.grid);
@@ -352,7 +390,7 @@ export class Scene3D {
     this.stars.scale.setScalar(next.starRadius);
 
     this.orbit.geometry.dispose();
-    this.orbit.geometry = buildRingGeometry(next.orbitRadius);
+    this.orbit.geometry = buildOrbitGeometry(next.orbitRadius);
 
     this.scene.remove(this.grid);
     (this.grid.material as THREE.Material).dispose();
@@ -377,7 +415,8 @@ export class Scene3D {
   }
 
   private makeEclipticGrid(radius: number): THREE.PolarGridHelper {
-    const grid = new THREE.PolarGridHelper(radius, 16, 6, 64, 0x1d2940, 0x141d30);
+    // 64 segments is smooth at the diagram radius and visibly polygonal at true scale.
+    const grid = new THREE.PolarGridHelper(radius, 16, 6, ringSegments(radius), 0x1d2940, 0x141d30);
     grid.rotateX(Math.PI / 2); // lay it in the ecliptic (XY) plane
     (grid.material as THREE.Material).transparent = true;
     (grid.material as THREE.Material).opacity = 0.5;
@@ -441,7 +480,9 @@ export class Scene3D {
     const scale = this.applyScale(state.trueScale ? TRUE_SCALE : DIAGRAM_SCALE);
     const sunLon = sunLongitudeDeg(dayOfYear);
     const sunDir = sunDirEcliptic(sunLon);
-    const earthPos = toVec3(sunDir).multiplyScalar(-scale.orbitRadius);
+    const earthPos = toVec3(sunDir).multiplyScalar(
+      -scale.orbitRadius * (sunDistanceKmAtLonDeg(sunLon) / AU_KM),
+    );
 
     const axisP = axisParamsAt(config, sunLon, state.axisPhaseLonDeg ?? sunLon);
     const fullM = earthMatrix(axisP.obliquityDeg, axisP.axisLongitudeDeg, spinDeg);
@@ -521,6 +562,7 @@ export class Scene3D {
     if (!moon || !show.moon) {
       this.moon.visible = false;
       this.moonOrbit.visible = false;
+      this.moonLine.visible = false;
       this.moonShadow.visible = false;
       return;
     }
@@ -530,6 +572,14 @@ export class Scene3D {
     const moonPos = earthPos.clone().add(toVec3(moon.dir).multiplyScalar(dist));
     this.moon.position.copy(moonPos);
     this.moon.visible = true;
+
+    this.moonLine.visible = show.moonline;
+    if (show.moonline) {
+      const arr = this.moonLine.geometry.attributes.position as THREE.BufferAttribute;
+      arr.setXYZ(0, earthPos.x, earthPos.y, earthPos.z);
+      arr.setXYZ(1, moonPos.x, moonPos.y, moonPos.z);
+      arr.needsUpdate = true;
+    }
 
     this.moonOrbit.visible = show.moonOrbit;
     if (show.moonOrbit && state.absDays !== undefined) {

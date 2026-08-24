@@ -1,7 +1,18 @@
+import { absDaysFrom, absDaysFromDate, orbitAndDay } from './astro/calendar';
 import { YEAR_DAYS, accumulatedLonDeg, defaultCustomConfig, sunLongitudeDeg } from './astro/config';
 import type { RotationConfig } from './astro/config';
-import { apparentSolarSpinSign, solarDayHours, spinAtLocalTime } from './astro/daypath';
+import { apparentSolarSpinSign, localSolarTimeAt, solarDayHours, spinAtLocalTime } from './astro/daypath';
 import { posMod } from './astro/vec';
+
+/** Time transport. Rewind and fast forward are multipliers on `speed`, so a negative speed reverses both. */
+export type Transport = 'paused' | 'rewind' | 'play' | 'ff';
+
+const TRANSPORT_FACTOR: Record<Transport, number> = {
+  paused: 0,
+  rewind: -2,
+  play: 1,
+  ff: 2,
+};
 
 /** Which 3D scene elements are shown (toggled in the View controls, read by the orbit scene). */
 export interface ShowOptions {
@@ -11,6 +22,7 @@ export interface ShowOptions {
   marker: boolean;
   subsolar: boolean;
   sunline: boolean;
+  moonline: boolean;
   grid: boolean;
   stars: boolean;
   moon: boolean;
@@ -35,7 +47,7 @@ export interface AppState {
   orbit: number;
   /** Local apparent solar time at the observer, 0..24 (12 = local noon). */
   timeOfDay: number;
-  playing: boolean;
+  transport: Transport;
   /** Absolute (orbital) hours advanced per real second while playing. */
   speed: number;
   show: ShowOptions;
@@ -54,10 +66,12 @@ export interface AppState {
   bottomViewWeights: Record<BottomViewId, number>;
   /** Sky view only: trace a gradually fading line behind the Sun's recent path. */
   sunTrail: boolean;
+  moonTrail: boolean;
   /** Sky view only: overlay a faint altitude/azimuth grid to read the Sun's position. */
   skyGrid: boolean;
   /** Sky view only: ease the camera to keep the Sun centred in the sky. */
   followSun: boolean;
+  followMoon: boolean;
 }
 
 /** Create the initial application state. */
@@ -71,7 +85,7 @@ export function defaultState(): AppState {
     dayOfYear: 172, // June solstice
     orbit: 0,
     timeOfDay: 12, // local solar noon
-    playing: false,
+    transport: 'paused',
     speed: 3,
     show: {
       axis: true,
@@ -80,6 +94,7 @@ export function defaultState(): AppState {
       marker: true,
       subsolar: true,
       sunline: false,
+      moonline: false,
       grid: true,
       stars: true,
       moon: true,
@@ -93,8 +108,10 @@ export function defaultState(): AppState {
     bottomViews: ['customGraph', 'locationMap'],
     bottomViewWeights: { realGraph: 1, customGraph: 2.4, locationMap: 1 },
     sunTrail: false,
+    moonTrail: false,
     skyGrid: true,
     followSun: false,
+    followMoon: false,
   };
 }
 
@@ -102,25 +119,57 @@ function wrapDayOfYear(day: number): number {
   return posMod(day - 1, YEAR_DAYS) + 1;
 }
 
-function wrapHour(hour: number): number {
-  return posMod(hour, 24);
-}
 
 // Fixed simulated-time slices limit frame-rate drift when formulas vary solar-day length.
 const MAX_STEP_HOURS = 1;
 // Cap slices so extreme speeds cannot make one frame unbounded.
 const MAX_STEPS = 64;
 
-/**
- * Advance by real seconds, using `speed` as absolute orbital hours per second.
- * Local time advances 24 hours per configured solar day.
- */
+/** Orbital hours per real second right now, signed: negative runs time backwards. */
+export function timeRate(state: AppState): number {
+  return state.speed * TRANSPORT_FACTOR[state.transport];
+}
+
+/** Advance by real seconds, moving absolute time only; the local clock is derived from it. */
 export function advanceTime(state: AppState, dtSeconds: number): void {
-  const absHours = dtSeconds * state.speed;
+  const absHours = dtSeconds * timeRate(state);
   if (!Number.isFinite(absHours) || absHours === 0) return;
   const steps = Math.min(MAX_STEPS, Math.max(1, Math.ceil(Math.abs(absHours) / MAX_STEP_HOURS)));
   const slice = absHours / steps;
   for (let i = 0; i < steps; i++) advanceOnce(state, slice);
+}
+
+/**
+ * Move absolute time so the observer's clock reads `target`. The clock is derived now, so
+ * setting it directly would simply be overwritten on the next tick.
+ */
+export function setLocalSolarTime(state: AppState, target: number): void {
+  const solarDay = solarDayHours(
+    state.config,
+    sunLongitudeDeg(state.dayOfYear),
+    accumulatedSunLonDeg(state),
+  );
+  if (!Number.isFinite(solarDay) || solarDay <= 0) return;
+  const current = localSolarTimeAt(
+    state.config,
+    absDaysFrom(state.orbit, state.dayOfYear),
+    state.lonDeg,
+  );
+  let delta = target - current;
+  delta = ((delta + 12) % 24 + 24) % 24 - 12; // nearest way round the clock
+  const rawDay = state.dayOfYear + (delta / 24) * (solarDay / 24);
+  state.orbit += Math.floor((rawDay - 1) / YEAR_DAYS);
+  state.dayOfYear = wrapDayOfYear(rawDay);
+  syncClock(state);
+}
+
+/** Local solar time is a consequence of where the Earth is pointing, never an input. */
+export function syncClock(state: AppState): void {
+  state.timeOfDay = localSolarTimeAt(
+    state.config,
+    absDaysFrom(state.orbit, state.dayOfYear),
+    state.lonDeg,
+  );
 }
 
 function advanceOnce(state: AppState, absHours: number): void {
@@ -130,12 +179,15 @@ function advanceOnce(state: AppState, absHours: number): void {
   state.orbit += Math.floor((rawDay - 1) / YEAR_DAYS);
   state.dayOfYear = wrapDayOfYear(rawDay);
 
-  const solarDay = solarDayHours(state.config, sunLongitudeDeg(state.dayOfYear), accumulatedSunLonDeg(state));
-  if (Number.isFinite(solarDay) && solarDay > 0) {
-    const next = wrapHour(state.timeOfDay + (absHours / solarDay) * 24);
-    // Do not let an extreme spin leave a non-finite clock value.
-    if (Number.isFinite(next)) state.timeOfDay = next;
-  }
+  syncClock(state);
+}
+
+/** Move the clock to the present, mapping real time onto the model's own day count. */
+export function setToNow(state: AppState, now = new Date()): void {
+  const { orbit, dayOfYear } = orbitAndDay(absDaysFromDate(now));
+  state.orbit = orbit;
+  state.dayOfYear = dayOfYear;
+  syncClock(state);
 }
 
 /** Return the Sun longitude accumulated across completed orbits. */

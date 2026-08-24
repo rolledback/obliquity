@@ -151,6 +151,8 @@ export function drawYearStrip(
   years: number,
   opts: {
     separatorColor: (yearIndex: number) => string | null;
+    /** Caption under each year; defaults to a 1-based counter. */
+    label?: (yearIndex: number) => string;
     gridColor: string;
     labelColor: string;
     skipFirstGridline: boolean;
@@ -182,7 +184,7 @@ export function drawYearStrip(
       const xYearMid = originX + ((y * CALENDAR_DAYS + 182) / spanDays) * plotW;
       ctx.fillStyle = 'rgba(160,176,205,0.7)';
       ctx.textAlign = 'center';
-      ctx.fillText(`Year ${y + 1}`, xYearMid, bottomY + (showMonths ? 24 : 14));
+      ctx.fillText(opts.label ? opts.label(y) : `Year ${y + 1}`, xYearMid, bottomY + (showMonths ? 24 : 14));
     }
   }
 }
