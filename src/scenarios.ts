@@ -1,11 +1,14 @@
 import { REALISTIC } from './astro/config';
 import type { RotationConfig } from './astro/config';
 import { FORMULA_EXAMPLES } from './formulaExamples';
+import { randomFormulaPair } from './randomFormula';
 
 interface Scenario {
   name: string;
   description: string;
   config: Partial<RotationConfig>;
+  /** Rolled fresh on every selection, so the same entry gives a different world each time. */
+  generate?: () => Partial<RotationConfig>;
 }
 
 /** Dropdown sentinel for a hand-tuned configuration. */
@@ -76,6 +79,21 @@ const SCENARIOS: Scenario[] = [
     config: { obliquityDeg: 87, prograde: false, axisMode: 'precession', precessionTurnsPerYear: 5 },
   },
 
+  {
+    name: 'Random Formula',
+    description:
+      'A brand new world every time you pick it. The tilt and lean formulas are rolled at ' +
+      'random from a wide range of rhythms: seasonal swings, slow drifts that reshape the ' +
+      'world from one year to the next, and precessions wound at irrational rates so the ' +
+      'axis never retraces its path. Anything that would jump the Sun across the sky or ' +
+      'leave the world too tame is thrown out and re-rolled, and the day length is never ' +
+      'touched, so however strange the sky becomes the clock still reads an ordinary day. ' +
+      'Pick it again for another. The formulas are shown in the Axis behaviour panel if ' +
+      'you want to see what you drew, or keep one you like.',
+    config: { axisMode: 'formula' },
+    generate: () => randomFormulaPair(),
+  },
+
   // Location formulas can improve eclipse visibility, but cannot change the fixed lunar orbit.
   {
     name: 'Eclipse Chaser',
@@ -92,7 +110,7 @@ const SCENARIOS: Scenario[] = [
       axisMode: 'formula',
       // Keep the tilt below 90 to avoid putting the Sun on the spin-axis singularity.
       tiltFormula: '75',
-      leanFormula: 'if(lat, lon, lon + 180)',
+      leanFormula: 'if(lat, sol_lon, sol_lon + 180)',
     },
   },
   {
@@ -106,11 +124,14 @@ const SCENARIOS: Scenario[] = [
       'eclipse is visible from the whole night side and an ordinary Earth already catches ' +
       'nearly all of them; near the poles, where an ordinary Earth does start missing ' +
       'them, it recovers a good half as many again. What changes everywhere is that they ' +
-      'ride overhead. Move the pin and the tilt follows your latitude.',
+      'ride overhead. Above about forty-five degrees of latitude the tilt needed to do it ' +
+      'is steep enough that the Sun stops rising altogether and the sky stays dark all ' +
+      'year, so nothing is ever lost to daylight. Move the pin and the tilt follows your ' +
+      'latitude.',
     config: {
       axisMode: 'formula',
       tiltFormula: 'abs(lat)',
-      leanFormula: 'if(lat, lon + 180, lon)',
+      leanFormula: 'if(lat, sol_lon + 180, sol_lon)',
     },
   },
 
@@ -141,10 +162,15 @@ export function applyScenario(config: RotationConfig, name: string): void {
   const sc = BY_NAME.get(name);
   if (!sc) return;
   const { siteLatDeg, siteLonDeg } = config;
-  Object.assign(config, REALISTIC, sc.config);
+  Object.assign(config, REALISTIC, sc.config, sc.generate?.() ?? {});
   // REALISTIC contains placeholder site values.
   config.siteLatDeg = siteLatDeg;
   config.siteLonDeg = siteLonDeg;
+}
+
+/** True when picking this scenario again yields a different world. */
+export function scenarioRerolls(name: string): boolean {
+  return BY_NAME.get(name)?.generate !== undefined;
 }
 
 /** The description text for a scenario name (falls back to the Custom blurb). */

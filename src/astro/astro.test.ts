@@ -1,3 +1,6 @@
+import { sunDistanceKmAtLonDeg, sunDistanceKmOnDay } from './calendar';
+import { posMod } from './vec';
+import { dayOfYearFromLonFraction as lonDay } from './calendar';
 import { describe, expect, it, vi } from 'vitest';
 import {
   REALISTIC,
@@ -16,6 +19,7 @@ import {
   classifyDaylight,
   culminationAltitudesDeg,
   declinationForDay,
+  SMOOTH_POLE_STEP,
   maxPoleStep,
   noonSpinDeg,
   northPole,
@@ -28,13 +32,39 @@ import { computeDayPath, apparentSolarSpinSign, meanSunRaRateDegPerHour, solarDa
 import { dailyInsolation, seasonCycle, seasonSpan, warmthAt } from './season';
 import { dot } from './vec';
 
+const EQUINOX_DAY = lonDay(0);
+
 const close = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
 
 describe('sun longitude from date', () => {
   it('is 0 at the March equinox and advances 90deg per season', () => {
-    expect(close(sunLongitudeDeg(79), 0, 1e-9)).toBe(true);
-    expect(close(sunLongitudeDeg(79 + 365.25 / 4), 90, 1e-6)).toBe(true);
-    expect(close(sunLongitudeDeg(79 + 365.25 / 2), 180, 1e-6)).toBe(true);
+    expect(close(sunLongitudeDeg(EQUINOX_DAY), 0, 1e-9)).toBe(true);
+    expect(close(sunLongitudeDeg(lonDay(0.25)), 90, 1e-6)).toBe(true);
+    expect(close(sunLongitudeDeg(lonDay(0.5)), 180, 1e-6)).toBe(true);
+  });
+
+  it('draws the orbit from the same ellipse the physics solves', () => {
+    // The orbit view sweeps its ring from the closed form, while everything else goes
+    // through the Kepler solve. If these ever part company the Earth drifts off its own
+    // drawn orbit, which is exactly the fault the fixed segment count once caused.
+    let worst = 0;
+    for (let day = 1; day < 366; day += 0.5) {
+      const viaKepler = sunDistanceKmOnDay(day);
+      const viaClosedForm = sunDistanceKmAtLonDeg(sunLongitudeDeg(day));
+      worst = Math.max(worst, Math.abs(viaKepler - viaClosedForm));
+    }
+    expect(worst).toBeLessThan(1e-6);
+  });
+
+  it('gives the four seasons their real, unequal lengths', () => {
+    // The orbit is an ellipse, so the Sun sweeps a quarter turn in unequal times. These
+    // are the real figures, and a circular orbit gives 91.31 four times over.
+    const q = [0, 0.25, 0.5, 0.75].map((f) => lonDay(f));
+    const lengths = q.map((d, i) => posMod(q[(i + 1) % 4] - d, 365.25));
+    expect(lengths[0]).toBeCloseTo(92.76, 1);
+    expect(lengths[1]).toBeCloseTo(93.65, 1);
+    expect(lengths[2]).toBeCloseTo(89.84, 1);
+    expect(lengths[3]).toBeCloseTo(88.99, 1);
   });
 });
 
@@ -56,8 +86,8 @@ describe('north pole vector', () => {
 });
 
 describe('noon altitude (sampled day path)', () => {
-  const equinoxDay = 79;
-  const juneSolsticeDay = 79 + 365.25 / 4;
+  const equinoxDay = EQUINOX_DAY;
+  const juneSolsticeDay = lonDay(0.25);
 
   it('reaches 90deg at the equator on the equinox', () => {
     const { stats } = computeDayPath(REALISTIC, equinoxDay, 0, 0);
@@ -79,7 +109,7 @@ describe('noon altitude (sampled day path)', () => {
 
 describe('sunrise / sunset azimuth and day length', () => {
   it('rises due east and sets due west at the equinox (prograde)', () => {
-    const { stats } = computeDayPath(REALISTIC, 79, 40, 0);
+    const { stats } = computeDayPath(REALISTIC, EQUINOX_DAY, 40, 0);
     expect(stats.sunriseAzDeg).not.toBeNull();
     expect(stats.sunsetAzDeg).not.toBeNull();
     expect(Math.abs((stats.sunriseAzDeg as number) - 90) < 1).toBe(true);
@@ -87,7 +117,7 @@ describe('sunrise / sunset azimuth and day length', () => {
   });
 
   it('gives ~12h of daylight at the equinox', () => {
-    const { stats } = computeDayPath(REALISTIC, 79, 40, 0);
+    const { stats } = computeDayPath(REALISTIC, EQUINOX_DAY, 40, 0);
     expect(Math.abs(stats.daylightHours - 12) < 0.2).toBe(true);
   });
 
@@ -100,20 +130,20 @@ describe('retrograde rotation', () => {
   it('makes the Sun rise in the west', () => {
     const retro = cloneConfig(REALISTIC);
     retro.prograde = false;
-    const { stats } = computeDayPath(retro, 79, 40, 0);
+    const { stats } = computeDayPath(retro, EQUINOX_DAY, 40, 0);
     expect(Math.abs((stats.sunriseAzDeg as number) - 270) < 1).toBe(true);
   });
 });
 
 describe('polar day and night at the North Pole', () => {
   it('is permanent daylight at the June solstice', () => {
-    const { stats } = computeDayPath(REALISTIC, 79 + 365.25 / 4, 90, 0);
+    const { stats } = computeDayPath(REALISTIC, lonDay(0.25), 90, 0);
     expect(stats.condition).toBe('polar-day');
     expect(stats.peakAltDeg > 0 && stats.minAltDeg > 0).toBe(true);
   });
 
   it('is permanent night at the December solstice', () => {
-    const { stats } = computeDayPath(REALISTIC, 79 + (3 * 365.25) / 4, 90, 0);
+    const { stats } = computeDayPath(REALISTIC, lonDay(0.75), 90, 0);
     expect(stats.condition).toBe('polar-night');
     expect(stats.peakAltDeg <= 0).toBe(true);
   });
@@ -204,7 +234,7 @@ describe('precession axis stays continuous across the equinox seam', () => {
     cfg.precessionTurnsPerYear = 3.5;
     cfg.axisLongitudeDeg = 0;
     const before = declinationForDay(cfg, 78.9);
-    const after = declinationForDay(cfg, 79.1);
+    const after = declinationForDay(cfg, EQUINOX_DAY + 0.1);
     expect(Math.abs(before - after) < 1).toBe(true);
   });
   it('noon spin does not snap for fractional turns/yr', () => {
@@ -212,7 +242,7 @@ describe('precession axis stays continuous across the equinox seam', () => {
     cfg.axisMode = 'precession';
     cfg.precessionTurnsPerYear = 2.2;
     const a = noonSpinDeg(cfg, 78.9, 30);
-    const b = noonSpinDeg(cfg, 79.1, 30);
+    const b = noonSpinDeg(cfg, EQUINOX_DAY + 0.1, 30);
     const delta = ((a - b + 540) % 360) - 180;
     expect(Math.abs(delta) < 2).toBe(true);
   });
@@ -228,10 +258,10 @@ describe('where the Sun actually appears', () => {
     sunAltAzAt(REALISTIC, day, noonSpinDeg(REALISTIC, day, 0), lat, 0);
 
   it('puts the equinox noon Sun due south in the north and due north in the south', () => {
-    expect(noon(79, 45).altDeg).toBeCloseTo(45, 6);
-    expect(noon(79, 45).azDeg).toBeCloseTo(180, 6);
-    expect(noon(79, -45).altDeg).toBeCloseTo(45, 6);
-    expect(noon(79, -45).azDeg).toBeCloseTo(0, 6);
+    expect(noon(EQUINOX_DAY, 45).altDeg).toBeCloseTo(45, 6);
+    expect(noon(EQUINOX_DAY, 45).azDeg).toBeCloseTo(180, 6);
+    expect(noon(EQUINOX_DAY, -45).altDeg).toBeCloseTo(45, 6);
+    expect(noon(EQUINOX_DAY, -45).azDeg).toBeCloseTo(0, 6);
   });
 
   it('raises and lowers the noon Sun by the obliquity at the solstices', () => {
@@ -247,7 +277,7 @@ describe('where the Sun actually appears', () => {
     // At an equinox the Sun rises due east from every latitude, which is the one sunrise
     // bearing that does not depend on where you are standing.
     for (const lat of [0, 45, -45, 70]) {
-      const rise = sunAltAzAt(REALISTIC, 79, noonSpinDeg(REALISTIC, 79, 0) - 90, lat, 0);
+      const rise = sunAltAzAt(REALISTIC, EQUINOX_DAY, noonSpinDeg(REALISTIC, EQUINOX_DAY, 0) - 90, lat, 0);
       expect(rise.altDeg).toBeCloseTo(0, 6);
       expect(rise.azDeg).toBeCloseTo(90, 6);
     }
@@ -257,7 +287,7 @@ describe('where the Sun actually appears', () => {
 describe('local solar noon anchoring (noonSpinDeg)', () => {
   // Local apparent noon must place the Sun at upper culmination.
   const cases = [
-    { day: 79, lat: 0, lon: 0 },
+    { day: EQUINOX_DAY, lat: 0, lon: 0 },
     { day: 172, lat: 47.61, lon: -122.33 },
     { day: 172, lat: -33.87, lon: 151.21 },
     { day: 311, lat: 51.5, lon: -0.13 },
@@ -554,7 +584,7 @@ describe('secular formulas evolve the seasonal aggregates across orbits', () => 
       ['8 + 28*sat(year/6)', '90'],
       ['65 + 30*wave(phase)', '90 + 70*wave(phase)'],
     ]) {
-      expect(maxPoleStep(formulaConfig(ex[0], ex[1]))).toBeLessThan(0.05);
+      expect(maxPoleStep(formulaConfig(ex[0], ex[1]))).toBeLessThan(SMOOTH_POLE_STEP);
     }
     expect(maxPoleStep(formulaConfig('40', '90 + 1000*phase'))).toBeGreaterThan(0.2);
     expect(maxPoleStep(formulaConfig('30*phase', '90'))).toBeGreaterThan(0.2);
@@ -564,7 +594,7 @@ describe('secular formulas evolve the seasonal aggregates across orbits', () => 
     const ex = FORMULA_EXAMPLES.find((e) => e.name === 'Maelstrom');
     expect(ex).toBeTruthy();
     const c = formulaConfig(ex!.tiltFormula, ex!.leanFormula);
-    expect(maxPoleStep(c)).toBeLessThan(0.05);
+    expect(maxPoleStep(c)).toBeLessThan(SMOOTH_POLE_STEP);
     expect(axisIsSecular(c)).toBe(true);
     const decAt = (orbit: number, day: number) => declinationForDay(c, day, accumulatedLonDeg(orbit, day));
     const yearMaxDiff = (o1: number, o2: number) => {
@@ -592,7 +622,7 @@ describe('secular formulas evolve the seasonal aggregates across orbits', () => 
     const ex = FORMULA_EXAMPLES.find((e) => e.name === 'Fractal Coastline');
     expect(ex).toBeTruthy();
     const c = formulaConfig(ex!.tiltFormula, ex!.leanFormula);
-    expect(maxPoleStep(c)).toBeLessThan(0.05);
+    expect(maxPoleStep(c)).toBeLessThan(SMOOTH_POLE_STEP);
     expect(axisIsSecular(c)).toBe(true);
     const decAt = (orbit: number, day: number) => declinationForDay(c, day, accumulatedLonDeg(orbit, day));
     const yearMaxDiff = (o1: number, o2: number) => {

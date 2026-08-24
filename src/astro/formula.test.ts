@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { compileFormula, formulaVars, type FormulaVars } from './formula';
 
 const VARS: FormulaVars = {
-  phase: 0.25, lon: 90, year: 2.25, t: 2.25, orbit: 2, day: 172, lat: 47.61, site: -122.33,
+  phase: 0.25, sol_lon: 90, year: 2.25, t: 2.25, orbit: 2, day: 172, lat: 47.61, lon: -122.33,
 };
 const ev = (src: string, vars: Partial<FormulaVars> = {}) =>
   compileFormula(src).fn({ ...VARS, ...vars });
@@ -44,13 +44,13 @@ describe('formula compiler: numbers and operators', () => {
 describe('formula compiler: variables and constants', () => {
   it('reads each exposed variable, including the observer position', () => {
     expect(ev('phase')).toBe(0.25);
-    expect(ev('lon')).toBe(90);
+    expect(ev('sol_lon')).toBe(90);
     expect(ev('year')).toBe(2.25);
     expect(ev('t')).toBe(2.25);
     expect(ev('orbit')).toBe(2);
     expect(ev('day')).toBe(172);
     expect(ev('lat')).toBe(47.61);
-    expect(ev('site')).toBe(-122.33);
+    expect(ev('lon')).toBe(-122.33);
   });
 
   it('knows PI, TAU and E', () => {
@@ -155,27 +155,27 @@ describe('formula compiler: errors and guards', () => {
 });
 
 describe('formulaVars: deriving inputs from the two longitudes', () => {
-  it('maps a within-orbit longitude to phase, lon, day and year', () => {
+  it('maps a within-orbit longitude to phase, sol_lon, day and year', () => {
     const v = formulaVars(90, 90);
-    expect(close(v.lon, 90)).toBe(true);
+    expect(close(v.sol_lon, 90)).toBe(true);
     expect(close(v.phase, 0.25)).toBe(true);
     expect(close(v.year, 0.25)).toBe(true);
     expect(v.orbit).toBe(0);
     expect(v.day >= 1 && v.day <= 366).toBe(true);
   });
 
-  it('accumulates year and orbit from the axis phase while lon stays wrapped', () => {
+  it('accumulates year and orbit from the axis phase while sol_lon stays wrapped', () => {
     const v = formulaVars(45, 2 * 360 + 45);
-    expect(close(v.lon, 45)).toBe(true);
+    expect(close(v.sol_lon, 45)).toBe(true);
     expect(close(v.phase, 0.125)).toBe(true);
     expect(close(v.year, 2 + 0.125)).toBe(true);
     expect(v.orbit).toBe(2);
   });
 
-  it('keeps lon and phase non-negative for negative longitudes', () => {
+  it('keeps sol_lon and phase non-negative for negative longitudes', () => {
     const v = formulaVars(-90, -90);
-    expect(v.lon).toBeGreaterThanOrEqual(0);
-    expect(close(v.lon, 270)).toBe(true);
+    expect(v.sol_lon).toBeGreaterThanOrEqual(0);
+    expect(close(v.sol_lon, 270)).toBe(true);
     expect(v.phase).toBeGreaterThanOrEqual(0);
   });
 });
@@ -194,4 +194,14 @@ describe('formula compiler: the allowlist is not the prototype chain', () => {
     expect(compileFormula('PI').error).toBeNull();
     expect(compileFormula('sin(1)').error).toBeNull();
   });
+});
+
+it('answers 0 outside a domain instead of inventing an extreme', () => {
+  const at = (src: string) => compileFormula(src).fn!({ phase: 0, sol_lon: 0, year: 0, t: 0, orbit: 0, day: 1, lat: 0, lon: 0 });
+  expect(at('asin(2)')).toBe(0);
+  expect(at('acos(-2)')).toBe(0);
+  expect(at('ln(-4)')).toBe(0);
+  // Roundoff-sized overshoot is still absorbed, which is what the clamp is for.
+  expect(at('asin(1 + 1e-12)')).toBeCloseTo(Math.PI / 2, 9);
+  expect(at('acos(-1 - 1e-12)')).toBeCloseTo(Math.PI, 9);
 });

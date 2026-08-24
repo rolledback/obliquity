@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { REALISTIC, accumulatedLonDeg, cloneConfig, axisUsesSite, sunLongitudeDeg } from './astro/config';
 import type { RotationConfig } from './astro/config';
 import { YEAR_DAYS } from './astro/calendar';
-import { axisParamsAt, northPole, sunDirEcliptic } from './astro/orientation';
+import { SMOOTH_POLE_STEP, axisParamsAt, maxPoleStep, northPole, sunDirEcliptic } from './astro/orientation';
 import { findNextEclipse } from './astro/eclipseFinder';
-import { spinAtLocalTime } from './astro/daypath';
+import { computeDayPath, spinAtLocalTime } from './astro/daypath';
 import { applyScenario, SCENARIO_NAMES } from './scenarios';
 import { dot, posMod } from './astro/vec';
 
@@ -146,5 +146,67 @@ describe('the eclipse scenarios deliver what they claim', () => {
       expect(mean(moonshadow)).toBeGreaterThan(80);
       expect(mean(moonshadow)).toBeGreaterThan(mean(real) + 20);
     }
+  });
+});
+
+describe('Local Maelstrom', () => {
+  /** Daily noon-Sun height through one orbit, clamped at the horizon. */
+  function signature(config: RotationConfig, latDeg: number, orbit: number): number[] {
+    const out: number[] = [];
+    for (let day = 1; day <= 365; day += 15) {
+      const { stats } = computeDayPath(config, day, latDeg, 0, 96, accumulatedLonDeg(orbit, day));
+      out.push(Math.max(0, stats.peakAltDeg));
+    }
+    return out;
+  }
+
+  /** How close the two most similar years come to each other. Higher means less repetition. */
+  function distinctness(config: RotationConfig, latDeg: number, years = 6): number {
+    const sigs = Array.from({ length: years }, (_, y) => signature(config, latDeg, y));
+    let worst = Infinity;
+    for (let i = 0; i < years; i += 1) {
+      for (let j = i + 1; j < years; j += 1) {
+        let d = 0;
+        for (let k = 0; k < sigs[i].length; k += 1) d = Math.max(d, Math.abs(sigs[i][k] - sigs[j][k]));
+        worst = Math.min(worst, d);
+      }
+    }
+    return worst;
+  }
+
+  it('reshapes itself when the pin moves', () => {
+    expect(axisUsesSite(worldAt('Local Maelstrom', 47.6))).toBe(true);
+    const north = axisParamsAt(worldAt('Local Maelstrom', 60), 40, 40);
+    const south = axisParamsAt(worldAt('Local Maelstrom', -60), 40, 40);
+    const equator = axisParamsAt(worldAt('Local Maelstrom', 0), 40, 40);
+    expect(Math.abs(north.obliquityDeg - equator.obliquityDeg)).toBeGreaterThan(20);
+    expect(Math.abs(north.obliquityDeg - south.obliquityDeg)).toBeLessThan(1e-9);
+  });
+
+  it('starts each longitude on a different year', () => {
+    const west = axisParamsAt(worldAt('Local Maelstrom', 47.6, -122), 40, 40);
+    const east = axisParamsAt(worldAt('Local Maelstrom', 47.6, 120), 40, 40);
+    expect(Math.abs(posMod(west.axisLongitudeDeg - east.axisLongitudeDeg, 360))).toBeGreaterThan(1);
+  });
+
+  it('never jumps the Sun across the sky', () => {
+    for (const lat of [0, 30, 47.6, 80]) {
+      expect(maxPoleStep(worldAt('Local Maelstrom', lat))).toBeLessThan(SMOOTH_POLE_STEP);
+    }
+  });
+
+  it('makes years less alike than plain Maelstrom does', () => {
+    // The equator is physically saturated (its day is always about 12 hours), so the claim
+    // is that it matches there and beats it everywhere else.
+    for (const lat of [30, 47.6, 80]) {
+      const local = distinctness(worldAt('Local Maelstrom', lat), lat);
+      const plain = distinctness(worldAt('Maelstrom', lat), lat);
+      expect(local).toBeGreaterThan(plain);
+    }
+    // The equator is physically saturated: its day is always about 12 hours whatever the
+    // axis does, so the only lever is noon Sun height and neither world can do better than
+    // the other by much. Matching there is the honest claim, not beating it.
+    const atEquator = distinctness(worldAt('Local Maelstrom', 0), 0);
+    expect(atEquator).toBeGreaterThan(distinctness(worldAt('Maelstrom', 0), 0) * 0.9);
   });
 });

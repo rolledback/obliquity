@@ -1,3 +1,4 @@
+import { YEAR_DAYS } from './calendar';
 import { sunLongitudeDeg } from './config';
 import type { RotationConfig } from './config';
 import { compileFormula, formulaVars } from './formula';
@@ -67,25 +68,41 @@ export function northPole(obliquityDeg: number, axisLongitudeDeg: number): V3 {
 }
 
 /**
- * Largest adjacent north-pole step over one sampled orbit, including the seam
- * into the next orbit. Used only as a discontinuity warning.
+ * Above this daily pole movement the Sun reads as jumping rather than moving. The chord is
+ * on the unit sphere, so 0.15 is about 8.6 degrees of pole travel in a day. Calibrated
+ * against the shipped worlds, whose honest daily figures run from 0 for realistic Earth to
+ * 0.086 for The Blender, which is deliberately the wildest thing here.
  */
-export function maxPoleStep(config: RotationConfig): number {
-  const N = 1440; // Quarter-degree orbital resolution.
-  const poles: V3[] = new Array(N + 1);
-  for (let i = 0; i <= N; i++) {
-    const u = (i / N) * 360;
-    const { obliquityDeg, axisLongitudeDeg } = axisParamsAt(config, posMod(u, 360), u);
-    poles[i] = northPole(obliquityDeg, axisLongitudeDeg);
-  }
+export const SMOOTH_POLE_STEP = 0.15;
+
+/**
+ * Largest north-pole movement between CONSECUTIVE DAYS, over several orbits.
+ * Days are the right unit because that is what the charts and the sky step through, and
+ * several orbits are needed because a world driven by `year` can be calm in its first one
+ * and wild later. Sampling the orbit at a fixed fine resolution instead can ALIAS: a lean
+ * that happens to advance a whole turn between probes reads as perfectly still.
+ */
+export function maxPoleStep(config: RotationConfig, orbits = 4): number {
+  const days = Math.ceil(orbits * YEAR_DAYS);
   let maxStep = 0;
-  for (let i = 0; i < N; i++) {
-    const a = poles[i];
-    const b = poles[i + 1];
-    const step = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  let prev = poleOnDay(config, 0);
+  for (let d = 1; d <= days; d += 1) {
+    const next = poleOnDay(config, d);
+    const step = Math.hypot(next[0] - prev[0], next[1] - prev[1], next[2] - prev[2]);
     if (step > maxStep) maxStep = step;
+    prev = next;
   }
   return maxStep;
+}
+
+function poleOnDay(config: RotationConfig, dayIndex: number): V3 {
+  const accumulated = (dayIndex / YEAR_DAYS) * 360;
+  const { obliquityDeg, axisLongitudeDeg } = axisParamsAt(
+    config,
+    posMod(accumulated, 360),
+    accumulated,
+  );
+  return northPole(obliquityDeg, axisLongitudeDeg);
 }
 
 /**

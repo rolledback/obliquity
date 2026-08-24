@@ -1,7 +1,7 @@
 import { AXIS_MODE_LABELS, REALISTIC, cloneConfig } from './astro/config';
 import type { AxisMode, RotationConfig } from './astro/config';
 import { MAX_SOURCE_LENGTH } from './astro/formula';
-import { CUSTOM_NAME, SCENARIO_NAMES, applyScenario } from './scenarios';
+import { CUSTOM_NAME, SCENARIO_NAMES, applyScenario, scenarioRerolls } from './scenarios';
 import type { AppState } from './state';
 
 const PARAM_BUILTIN = 's';
@@ -76,7 +76,9 @@ export function buildShareUrl(state: AppState, href: string = location.href): st
   url.hash = '';
   url.searchParams.delete(PARAM_BUILTIN);
   url.searchParams.delete(PARAM_CUSTOM);
-  if (isBuiltinName(state.scenario)) {
+  // A scenario that rolls a new world each time cannot travel as a name: the recipient
+  // would roll their own. Send what was actually on screen instead.
+  if (isBuiltinName(state.scenario) && !scenarioRerolls(state.scenario)) {
     url.searchParams.set(PARAM_BUILTIN, slugify(state.scenario));
   } else {
     url.searchParams.set(PARAM_CUSTOM, toBase64Url(JSON.stringify(diffConfig(state.config))));

@@ -1,11 +1,10 @@
 import {
-  AU_KM,
   EARTH_RADIUS_KM,
   MOON_RADIUS_KM,
   SUN_RADIUS_KM,
   moonTopocentric,
   observerOffsetKm,
-  SUN_ANGULAR_RADIUS_DEG,
+  sunAngularRadiusDeg,
 } from './moon';
 import type { MoonState } from './moon';
 import { sunDirEcliptic } from './orientation';
@@ -96,7 +95,7 @@ export function solarEclipseAt(
   lonDeg: number,
 ): SolarEclipse {
   const observer = observerOffsetKm(M, latDeg, lonDeg);
-  const sunTopo = sub(scale(sunDirEcliptic(moon.sunLonDeg), AU_KM), observer);
+  const sunTopo = sub(scale(sunDirEcliptic(moon.sunLonDeg), moon.sunDistanceKm), observer);
   const moonTopo = moonTopocentric(moon, M, latDeg, lonDeg);
 
   const separationDeg = angleBetweenDeg(sunTopo, moonTopo.dir);
@@ -140,10 +139,10 @@ export function lunarEclipseAt(moon: MoonState): LunarEclipse {
   const missKm = norm(sub(moon.posKm, scale(axis, along)));
 
   const umbraKm =
-    (EARTH_RADIUS_KM - (along * (SUN_RADIUS_KM - EARTH_RADIUS_KM)) / AU_KM) *
+    (EARTH_RADIUS_KM - (along * (SUN_RADIUS_KM - EARTH_RADIUS_KM)) / moon.sunDistanceKm) *
     ATMOSPHERE_ENLARGEMENT;
   const penumbraKm =
-    (EARTH_RADIUS_KM + (along * (SUN_RADIUS_KM + EARTH_RADIUS_KM)) / AU_KM) *
+    (EARTH_RADIUS_KM + (along * (SUN_RADIUS_KM + EARTH_RADIUS_KM)) / moon.sunDistanceKm) *
     ATMOSPHERE_ENLARGEMENT;
 
   const magnitude = (umbraKm + MOON_RADIUS_KM - missKm) / (2 * MOON_RADIUS_KM);
@@ -165,7 +164,7 @@ export function lunarEclipseAt(moon: MoonState): LunarEclipse {
 }
 
 function shadowAxisDir(moon: MoonState): V3 {
-  return normalize(sub(moon.posKm, scale(sunDirEcliptic(moon.sunLonDeg), AU_KM)));
+  return normalize(sub(moon.posKm, scale(sunDirEcliptic(moon.sunLonDeg), moon.sunDistanceKm)));
 }
 
 /** Moon-shadow axis intersection with Earth in the ecliptic frame, or null. */
@@ -212,7 +211,7 @@ export function solarShadowCentreKm(moon: MoonState): V3 | null {
 export function solarEclipsePossible(moon: MoonState): boolean {
   const sunDir = sunDirEcliptic(moon.sunLonDeg);
   const separationDeg = angleBetweenDeg(moon.dir, sunDir);
-  const sunRadiusDeg = SUN_ANGULAR_RADIUS_DEG;
+  const sunRadiusDeg = sunAngularRadiusDeg(moon.sunDistanceKm);
   const parallaxDeg = Math.asin(clamp(EARTH_RADIUS_KM / moon.distanceKm, -1, 1)) * RAD;
   return separationDeg < sunRadiusDeg + moon.angularRadiusDeg + parallaxDeg;
 }

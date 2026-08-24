@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { applyShare, buildShareUrl, parseShareFromUrl, slugify } from './share';
 import { defaultState } from './state';
 import { REALISTIC, cloneConfig } from './astro/config';
-import { CUSTOM_NAME, SCENARIO_NAMES } from './scenarios';
+import { CUSTOM_NAME, SCENARIO_NAMES, applyScenario } from './scenarios';
 
 const HREF = 'https://example.test/app/';
 
@@ -103,4 +103,19 @@ describe('a shared world cannot move the recipient', () => {
     expect(json).not.toContain('site');
     expect(JSON.parse(json)).toEqual({ obliquityDeg: 62.5 });
   });
+});
+
+it('sends the world that was rolled, not a name that would reroll', () => {
+  const state = defaultState();
+  applyScenario(state.config, 'Random Formula');
+  state.scenario = 'Random Formula';
+  const sent = { tilt: state.config.tiltFormula, lean: state.config.leanFormula };
+
+  const url = buildShareUrl(state, 'https://example.com/');
+  expect(url).not.toContain('s=random-formula');
+
+  const received = defaultState();
+  applyShare(received, parseShareFromUrl(url)!);
+  expect(received.config.tiltFormula).toBe(sent.tilt);
+  expect(received.config.leanFormula).toBe(sent.lean);
 });

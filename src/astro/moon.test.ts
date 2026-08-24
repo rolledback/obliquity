@@ -44,10 +44,11 @@ describe('lunar orbit geometry', () => {
       min = Math.min(min, d);
       max = Math.max(max, d);
     }
-    // Kepler ellipse with a = 384400 km, e = 0.0549.
-    expect(min).toBeGreaterThan(360000);
-    expect(min).toBeLessThan(366000);
-    expect(max).toBeGreaterThan(403000);
+    // Perturbed orbit, so this brackets the REAL Moon (356500 to 406700 km).
+    // A pure Kepler ellipse never comes nearer than 363296 and fails the first bound.
+    expect(min).toBeGreaterThan(355000);
+    expect(min).toBeLessThan(358000);
+    expect(max).toBeGreaterThan(404000);
     expect(max).toBeLessThan(408000);
   });
 
@@ -155,21 +156,19 @@ describe('phase', () => {
   });
 
   it('is full when opposite the Sun and new when in line with it', () => {
-    let sawFull = false;
-    let sawNew = false;
-    for (let t = 0; t < 400; t += 0.1) {
+    // The orbit is inclined, so the Moon rarely reaches a full 180 degrees of elongation.
+    // Take the widest and narrowest it actually gets, and check the lit fraction there.
+    let widest = { elong: -1, lit: 0 };
+    let narrowest = { elong: 999, lit: 0 };
+    for (let t = 0; t < 400; t += 0.01) {
       const m = moonStateAt(t);
-      if (m.elongationDeg > 179) {
-        expect(m.illuminated).toBeGreaterThan(0.999);
-        sawFull = true;
-      }
-      if (m.elongationDeg < 1) {
-        expect(m.illuminated).toBeLessThan(0.001);
-        sawNew = true;
-      }
+      if (m.elongationDeg > widest.elong) widest = { elong: m.elongationDeg, lit: m.illuminated };
+      if (m.elongationDeg < narrowest.elong) narrowest = { elong: m.elongationDeg, lit: m.illuminated };
     }
-    expect(sawFull).toBe(true);
-    expect(sawNew).toBe(true);
+    expect(widest.elong).toBeGreaterThan(175);
+    expect(widest.lit).toBeGreaterThan(0.998);
+    expect(narrowest.elong).toBeLessThan(5);
+    expect(narrowest.lit).toBeLessThan(0.002);
   });
 
   it('ties the illuminated fraction to the phase angle', () => {

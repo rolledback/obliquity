@@ -6,7 +6,7 @@ export interface FormulaVars {
   /** Fraction around the Sun this orbit, 0 at the March equinox, wrapping at 1. */
   phase: number;
   /** The Sun's ecliptic longitude this orbit in degrees, 0..360. */
-  lon: number;
+  sol_lon: number;
   /** Unwrapped orbital phase in years, with 0 at the March equinox. */
   year: number;
   /** Alias of `year`: the overall progress of the simulation. */
@@ -18,7 +18,7 @@ export interface FormulaVars {
   /** Observer latitude in degrees, positive north. */
   lat: number;
   /** The longitude you are standing at, in degrees, positive east. */
-  site: number;
+  lon: number;
 }
 
 /** A compiled evaluator, its parse status, and referenced variables. */
@@ -33,25 +33,41 @@ export interface CompiledFormula {
 }
 
 const FORMULA_VARS: readonly (keyof FormulaVars)[] = [
-  'phase', 'lon', 'year', 't', 'orbit', 'day', 'lat', 'site',
+  'phase', 'sol_lon', 'year', 't', 'orbit', 'day', 'lat', 'lon',
 ];
 
 /** Variables that make formula results and their cache keys location-dependent. */
-export const SITE_VARS: readonly (keyof FormulaVars)[] = ['lat', 'site'];
+export const SITE_VARS: readonly (keyof FormulaVars)[] = ['lat', 'lon'];
 
 type Fn = (vars: FormulaVars) => number;
 
 const DEG = Math.PI / 180;
 const frac = (x: number) => x - Math.floor(x);
 
+/** How far outside a domain still counts as roundoff rather than a real mistake. */
+const DOMAIN_SLOP = 1e-9;
+
+function unitDomain(x: number): number {
+  if (x > 1) return x <= 1 + DOMAIN_SLOP ? 1 : NaN;
+  if (x < -1) return x >= -1 - DOMAIN_SLOP ? -1 : NaN;
+  return x;
+}
+
+function positiveDomain(x: number): number {
+  if (x > 0) return Math.log(x);
+  return x >= -DOMAIN_SLOP ? Math.log(1e-12) : NaN;
+}
+
 // An arity of -1 means one or more arguments.
 const FUNCTIONS: Record<string, [number, (a: number[]) => number]> = {
   sin: [1, (a) => Math.sin(a[0])],
   cos: [1, (a) => Math.cos(a[0])],
   tan: [1, (a) => Math.tan(a[0])],
-  // Clamp floating-point overshoot at the domain boundary instead of returning NaN.
-  asin: [1, (a) => Math.asin(Math.min(1, Math.max(-1, a[0])))],
-  acos: [1, (a) => Math.acos(Math.min(1, Math.max(-1, a[0])))],
+  // Absorb roundoff at the domain boundary, but let a genuinely out-of-domain argument
+  // fall through as NaN, which the guard on every result turns into 0. Clamping without a
+  // tolerance quietly answered asin(2) with a right angle.
+  asin: [1, (a) => Math.asin(unitDomain(a[0]))],
+  acos: [1, (a) => Math.acos(unitDomain(a[0]))],
   atan: [1, (a) => Math.atan(a[0])],
   atan2: [2, (a) => Math.atan2(a[0], a[1])],
   sind: [1, (a) => Math.sin(a[0] * DEG)],
@@ -61,8 +77,8 @@ const FUNCTIONS: Record<string, [number, (a: number[]) => number]> = {
   sign: [1, (a) => Math.sign(a[0])],
   sqrt: [1, (a) => Math.sqrt(Math.max(0, a[0]))],
   exp: [1, (a) => Math.exp(a[0])],
-  ln: [1, (a) => Math.log(Math.max(1e-12, a[0]))],
-  log: [1, (a) => Math.log(Math.max(1e-12, a[0]))],
+  ln: [1, (a) => positiveDomain(a[0])],
+  log: [1, (a) => positiveDomain(a[0])],
   log10: [1, (a) => Math.log10(Math.max(1e-12, a[0]))],
   floor: [1, (a) => Math.floor(a[0])],
   ceil: [1, (a) => Math.ceil(a[0])],
@@ -382,18 +398,18 @@ export function formulaVars(
   siteLatDeg = 0,
   siteLonDeg = 0,
 ): FormulaVars {
-  const lon = posMod(sunLonDeg, 360);
+  const solLon = posMod(sunLonDeg, 360);
   const year = axisPhaseLonDeg / 360;
-  const day = dayOfYearFromLonFraction(lon / 360);
+  const day = dayOfYearFromLonFraction(solLon / 360);
   return {
-    phase: lon / 360,
-    lon,
+    phase: solLon / 360,
+    sol_lon: solLon,
     year,
     t: year,
     // Do not floor `year`: before the March epoch it is negative during the first orbit.
     orbit: Math.round((axisPhaseLonDeg - sunLonDeg) / 360),
     day,
     lat: siteLatDeg,
-    site: siteLonDeg,
+    lon: siteLonDeg,
   };
 }

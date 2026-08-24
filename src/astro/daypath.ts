@@ -11,11 +11,12 @@ import {
   sunriseHourAngleRad,
 } from './orientation';
 import { compileFormula, formulaVars } from './formula';
+import { orbitAndDay } from './calendar';
 import { YEAR_HOURS, accumulatedLonDeg, axisConfigKey, periodOrbits, sunLongitudeDeg } from './config';
 import type { RotationConfig } from './config';
 import type { AxisParams } from './orientation';
 import type { Mat3 } from './vec';
-import { DEG, RAD, clamp, wrapSignedDeg } from './vec';
+import { DEG, RAD, clamp, posMod, wrapSignedDeg } from './vec';
 
 export interface DaySample {
   /** Fraction through the day in chronological order, 0..1. */
@@ -260,4 +261,36 @@ export function computeDayPath(
       condition,
     },
   };
+}
+
+/** Sidereal rotation in degrees per absolute day, signed by spin direction. */
+function spinRateDegPerDay(config: RotationConfig): number {
+  return ((360 * 24) / config.rotationPeriodHours) * (config.prograde ? 1 : -1);
+}
+
+/**
+ * The Earth's rotational phase at an absolute instant, anchored so that absolute day 0 is
+ * local noon on the Greenwich meridian.
+ *
+ * This is what makes longitude mean anything. Deriving the phase from a free local clock
+ * let every longitude be at noon at once, so an eclipse over Iceland read as total in
+ * Seattle. A spin formula varies the rate and would need integrating; it uses the base rate.
+ */
+export function spinAtAbsDays(config: RotationConfig, absDays: number): number {
+  const anchor = noonSpinDeg(config, 1, 0, accumulatedLonDeg(0, 1));
+  return anchor + spinRateDegPerDay(config) * absDays;
+}
+
+/** Local apparent solar time at a place, derived from the absolute instant. */
+export function localSolarTimeAt(
+  config: RotationConfig,
+  absDays: number,
+  lonDeg: number,
+): number {
+  const { orbit, dayOfYear } = orbitAndDay(absDays);
+  const accum = accumulatedLonDeg(orbit, dayOfYear);
+  const noon = noonSpinDeg(config, dayOfYear, lonDeg, accum);
+  const sign = apparentSolarSpinSign(config, sunLongitudeDeg(dayOfYear), accum);
+  const past = wrapSignedDeg(spinAtAbsDays(config, absDays) - noon);
+  return posMod(12 + past / (sign * 15), 24);
 }

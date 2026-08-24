@@ -48,7 +48,7 @@ export interface RotationConfig {
   spinFormula: string;
   /** Observer latitude for formulas using `lat`, in degrees north. */
   siteLatDeg: number;
-  /** Observer longitude for formulas using `site`, in degrees east. */
+  /** Observer longitude for formulas using `lon`, in degrees east. */
   siteLonDeg: number;
 }
 

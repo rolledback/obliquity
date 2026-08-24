@@ -1,4 +1,4 @@
-import { YEAR_DAYS, absDaysFrom } from './calendar';
+import { YEAR_DAYS, absDaysFrom, orbitAndDay } from './calendar';
 import type { RotationConfig } from './config';
 import { earthMatrixAtLocalTime } from './daypath';
 import {
@@ -7,7 +7,7 @@ import {
   solarEclipseAt,
   solarEclipsePossible,
 } from './eclipse';
-import { SUN_ANGULAR_RADIUS_DEG } from './moon';
+import { sunAngularRadiusDeg } from './moon';
 import type { LunarEclipseKind, SolarEclipseKind } from './eclipse';
 import { moonStateAt, moonTopocentric } from './moon';
 import type { MoonState } from './moon';
@@ -47,12 +47,6 @@ interface EclipseHitOf<T extends EclipseType> {
   absDays: number;
 }
 
-/** Orbit and day-of-year for an absolute day count. */
-function splitAbsDays(absDays: number): { orbit: number; dayOfYear: number } {
-  const orbit = Math.floor(absDays / YEAR_DAYS);
-  return { orbit, dayOfYear: absDays - orbit * YEAR_DAYS + 1 };
-}
-
 // Refinement changes absolute time, so rederive the orientation date at every sample.
 function orientationAtInstant(
   config: RotationConfig,
@@ -60,7 +54,7 @@ function orientationAtInstant(
   lonDeg: number,
   hour: number,
 ) {
-  const at = splitAbsDays(absDays);
+  const at = orbitAndDay(absDays);
   return earthMatrixAtLocalTime(config, at.orbit, at.dayOfYear, lonDeg, hour);
 }
 
@@ -117,30 +111,29 @@ function bestLocalView(
   latDeg: number,
   lonDeg: number,
   steps = 288, // every 5 local minutes
+  fixedLocalTime?: number,
 ): LocalPeak {
   // Negative sentinel lets a zero-magnitude graze beat no eclipse.
   let best: LocalPeak = { timeOfDay: 12, magnitude: 0, score: -1, altDeg: -90, kind: 'none' };
-  for (let i = 0; i < steps; i++) {
-    const timeOfDay = (i / steps) * 24;
+  // Lunar geometry is global, so it is the same at every local time. Settle it once.
+  const lunar = type === 'lunar' ? lunarEclipseAt(moon) : null;
+  if (lunar && lunar.kind === 'none') return best;
+  const lunarMagnitude = lunar ? lunarDepth(lunar) : 0;
+  const lunarScore = lunar ? eclipseScore('lunar', lunar.kind, lunarMagnitude) : -1;
+  const n = fixedLocalTime === undefined ? steps : 1;
+  for (let i = 0; i < n; i++) {
+    const timeOfDay = fixedLocalTime === undefined ? (i / steps) * 24 : fixedLocalTime;
     const M = earthMatrixAtLocalTime(config, orbit, dayOfYear, lonDeg, timeOfDay);
     if (type === 'solar') {
       const view = solarView(moon, M, timeOfDay, latDeg, lonDeg);
       if (view.score > best.score) best = view;
-    } else {
-      const e = lunarEclipseAt(moon);
-      if (e.kind === 'none') continue;
-      // Lunar geometry is global; choose the orientation with highest Moon altitude.
+    } else if (lunar) {
+      // Only the observer's view varies, so take the orientation with the Moon highest.
       const topo = moonTopocentric(moon, M, latDeg, lonDeg);
       const alt = directionAltAz(M, topo.dir, latDeg, lonDeg).altDeg;
       if (alt <= MIN_VISIBLE_ALT_DEG) continue;
       if (alt > best.altDeg) {
-        best = {
-          timeOfDay,
-          magnitude: lunarDepth(e),
-          score: eclipseScore('lunar', e.kind, lunarDepth(e)),
-          altDeg: alt,
-          kind: e.kind,
-        };
+        best = { timeOfDay, magnitude: lunarMagnitude, score: lunarScore, altDeg: alt, kind: lunar.kind };
       }
     }
   }
@@ -199,6 +192,7 @@ function refineSolarPeak(
   coarse: LocalPeak,
   latDeg: number,
   lonDeg: number,
+  clock?: LocalClock,
 ): { absDays: number; peak: LocalPeak } {
   let bestAbs = absDays;
   let best = coarse;
@@ -215,7 +209,10 @@ function refineSolarPeak(
         if (i === 0 && j === 0) continue;
         const t = bestAbs + (i / 2) * absRadius;
         if (t < 0) continue;
-        const h = best.timeOfDay + (j / RIDGE_STEPS) * hourRadius;
+        // With a clock the hour is not free: the instant fixes where the observer is, so
+        // only absolute time is searched and the local hour follows.
+        if (clock && j !== 0) continue;
+        const h = clock ? clock(t) : best.timeOfDay + (j / RIDGE_STEPS) * hourRadius;
         if (h < 0 || h >= 24) continue;
         const view = solarViewAt(config, t, h, latDeg, lonDeg);
         if (view.score > best.score) {
@@ -238,6 +235,8 @@ export interface FindOptions<T extends EclipseType = EclipseType> {
   kinds?: readonly KindOf<T>[];
   /** Ignore eclipses fainter than this magnitude, so the finder skips grazing events. */
   minMagnitude?: number;
+  /** The observer's local solar time at an instant. Omit to sweep every local hour. */
+  clock?: LocalClock;
   /** How far ahead to look before giving up. */
   maxYears?: number;
   /** Search backwards instead of forwards. */
@@ -257,7 +256,7 @@ function syzygyGapDeg(type: EclipseType, moon: MoonState): number {
 
 // Generous size-only totality filter; surface parallax can enlarge the Moon about 1.7%.
 function couldBeTotalSomewhere(moon: MoonState): boolean {
-  return moon.angularRadiusDeg * 1.02 >= SUN_ANGULAR_RADIUS_DEG;
+  return moon.angularRadiusDeg * 1.02 >= sunAngularRadiusDeg(moon.sunDistanceKm);
 }
 
 /** True when a global eclipse candidate exists, ignoring the observer. */
@@ -279,7 +278,10 @@ const RIDGE_STEPS = 6;
 /** Coarse walk step, in days, used to bound a candidate window. */
 const WINDOW_STEP = 0.01;
 
-/** 2.88-minute stride; 14.4 minutes skipped a 6.34-minute graze in a 600-year survey. */
+/**
+ * 2.88-minute stride. A 600-year survey finds 1251 solar events, exactly one of them under
+ * 14.4 minutes, and that one lasts 10.94, so the old 14.4-minute floor stepped over it.
+ */
 export const SYZYGY_STEP = 0.002;
 
 // Solar-event instants offered to topocentric refinement.
@@ -299,8 +301,9 @@ function viewAt(
   latDeg: number,
   lonDeg: number,
   steps?: number,
+  clock?: LocalClock,
 ): LocalPeak {
-  const at = splitAbsDays(absDays);
+  const at = orbitAndDay(absDays);
   return bestLocalView(
     type,
     moonStateAt(absDays),
@@ -310,8 +313,19 @@ function viewAt(
     latDeg,
     lonDeg,
     steps,
+    clock ? clock(absDays) : undefined,
   );
 }
+
+/**
+ * The observer's local solar time at an absolute instant.
+ *
+ * Without one the search sweeps every local hour, which answers "could anyone at this
+ * LATITUDE see it", not "will I see it". That is how a total eclipse over Iceland and Spain
+ * was reported as total from Seattle: the shadow crossed Seattle's parallel, just not
+ * Seattle. With a clock the observer stays where they actually are.
+ */
+export type LocalClock = (absDays: number) => number;
 
 /** Coarse absolute-time window containing one global eclipse candidate. */
 function eventWindow(type: EclipseType, at: number): { start: number; end: number } {
@@ -371,7 +385,7 @@ export function findNextEclipse<T extends EclipseType>(
   dayOfYear: number,
   options: FindOptions<T> = {},
 ): EclipseHit<T> | null {
-  const { kinds, minMagnitude = 0, maxYears = 20, backwards = false } = options;
+  const { kinds, minMagnitude = 0, maxYears = 20, backwards = false, clock } = options;
   const dir = backwards ? -1 : 1;
   const start = absDaysFrom(orbit, dayOfYear);
   const limit = maxYears * YEAR_DAYS;
@@ -392,7 +406,7 @@ export function findNextEclipse<T extends EclipseType>(
       const peakAbs = greatestEclipseAt(type, window);
       const hit =
         !totalOnly || couldBeTotalSomewhere(moonStateAt(peakAbs))
-          ? examine(type, config, window, peakAbs, latDeg, lonDeg, kinds, minMagnitude)
+          ? examine(type, config, window, peakAbs, latDeg, lonDeg, kinds, minMagnitude, clock)
           : null;
       if (hit) return hit;
       t = backwards ? window.start - WINDOW_STEP : window.end + WINDOW_STEP;
@@ -417,9 +431,10 @@ function examine<T extends EclipseType>(
   lonDeg: number,
   kinds: readonly (SolarEclipseKind | LunarEclipseKind)[] | undefined,
   minMagnitude: number,
+  clock?: LocalClock,
 ): EclipseHit<T> | null {
   let absDays = peakAbs;
-  let peak = viewAt(type, config, peakAbs, latDeg, lonDeg);
+  let peak = viewAt(type, config, peakAbs, latDeg, lonDeg, undefined, clock);
 
   if (type === 'solar') {
     // Sample the full event because an observer's peak can lie far from the global peak.
@@ -427,7 +442,7 @@ function examine<T extends EclipseType>(
     if (peak.kind !== 'none') seen.push({ absDays: peakAbs, peak });
     for (let i = 0; i <= WINDOW_SAMPLES; i++) {
       const t = window.start + ((window.end - window.start) * i) / WINDOW_SAMPLES;
-      const view = viewAt(type, config, t, latDeg, lonDeg, COARSE_LOCAL_STEPS);
+      const view = viewAt(type, config, t, latDeg, lonDeg, COARSE_LOCAL_STEPS, clock);
       if (view.kind !== 'none') seen.push({ absDays: t, peak: view });
     }
     if (seen.length === 0) return null;
@@ -436,7 +451,7 @@ function examine<T extends EclipseType>(
     seen.sort((a, b) => b.peak.score - a.peak.score);
     let best: { absDays: number; peak: LocalPeak } | null = null;
     for (const start of seen.slice(0, REFINE_CANDIDATES)) {
-      const refined = refineSolarPeak(config, start.absDays, start.peak, latDeg, lonDeg);
+      const refined = refineSolarPeak(config, start.absDays, start.peak, latDeg, lonDeg, clock);
       if (!best || refined.peak.score > best.peak.score) best = refined;
     }
     if (!best) return null;
@@ -448,7 +463,7 @@ function examine<T extends EclipseType>(
   if (kinds && !kinds.includes(peak.kind)) return null;
   if (peak.magnitude < minMagnitude) return null;
 
-  const split = splitAbsDays(absDays);
+  const split = orbitAndDay(absDays);
   // Evaluation preserves type-kind correlation, which the generic conditional cannot prove.
   return {
     type,

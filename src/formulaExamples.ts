@@ -9,10 +9,12 @@ export interface FormulaExample {
 /** Formula-mode showcases shared with the scenario picker. */
 export const FORMULA_EXAMPLES: FormulaExample[] = [
   {
-    name: 'Analemma Dance',
+    name: 'Three Summers',
     blurb:
-      'The tilt waves once a year and the lean twice, weaving the noon Sun into a ' +
-      'looping figure-eight across the sky.',
+      'The tilt breathes once a year while the lean swings twice, and the two rhythms beat ' +
+      'together into three separate summers and three winters inside a single orbit. At ' +
+      'mid latitudes the noon Sun climbs from a low winter arc to very nearly straight ' +
+      'overhead and back down again, three times over.',
     tiltFormula: '30 + 18*wave(phase)',
     leanFormula: '90 + 80*wave(2*phase)',
   },
@@ -51,6 +53,24 @@ export const FORMULA_EXAMPLES: FormulaExample[] = [
       'chaotic yet still glides smoothly from day to day.',
     tiltFormula: '50 + 24*wave(phase + 0.092*sqrt(2)*year) + 18*wave(2*phase + 0.041*sqrt(3)*year) + 40*wave(0.017*sqrt(5)*year)',
     leanFormula: '90 + 360*sqrt(3)*year + 55*wave(phase + 0.027*sqrt(7)*year) + 22*wave(2*phase + 0.013*sqrt(11)*year)',
+  },
+  {
+    name: 'Local Maelstrom',
+    blurb:
+      'Maelstrom aimed squarely at wherever your pin is standing. The tilt is centred on ' +
+      'your own latitude, so the Sun keeps swinging back through the overhead point, and ' +
+      'the size of its slow drift is set from your latitude too, wide near the equator and ' +
+      'tight near the poles where a small change already flips endless day into endless ' +
+      'night. The lean starts from your longitude, so no two places run the same year. ' +
+      'Measured against plain Maelstrom it makes each year more unlike the last at every ' +
+      'latitude away from the equator, by about a sixth in the tropics and two fifths at ' +
+      'eighty degrees. At the equator the two tie, because a day there is always about ' +
+      'twelve hours whatever the axis does, so there is simply less for any world to ' +
+      'change. It still glides smoothly from day to day. Move the pin and it re-aims.',
+    tiltFormula:
+      'abs(lat) + clamp(90 - abs(lat), 10, 45)*wave(0.017*sqrt(5)*year) + 25*wave(phase + 0.092*sqrt(2)*year) + 15*wave(2*phase + 0.041*sqrt(3)*year)',
+    leanFormula:
+      'lon + 360*sqrt(3)*year + 55*wave(phase + 0.027*sqrt(7)*year) + 22*wave(2*phase + 0.013*sqrt(11)*year)',
   },
   {
     name: 'Fractal Coastline',

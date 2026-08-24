@@ -70,11 +70,11 @@ describe('finding solar eclipses', () => {
     // Start just before a genuinely shallow event, so the filter has to DO something. The
     // old version started at day one, where the very first hit already cleared the bar, so
     // deleting the minMagnitude check outright left it passing.
-    const start = { orbit: 3, day: 298.25 }; // absolute day 1393.0
+    const start = { orbit: 1, day: 10.75 }; // absolute day 375.0
     const any = findNextEclipse('solar', REALISTIC, SEATTLE.lat, SEATTLE.lon, start.orbit, start.day, {
       maxYears: 60,
     })!;
-    expect(any.magnitude).toBeCloseTo(0.3855, 3); // the shallow one is what is next
+    expect(any.magnitude).toBeLessThan(0.5); // the shallow one is what is next
 
     const deep = findNextEclipse('solar', REALISTIC, SEATTLE.lat, SEATTLE.lon, start.orbit, start.day, {
       minMagnitude: 0.5,
@@ -102,10 +102,10 @@ describe('finding lunar eclipses', () => {
   });
 
   it('walks past a shallower lunar eclipse when asked for deep ones', () => {
-    // Starting where the next event is a PARTIAL of magnitude 0.72, so the threshold has
+    // Starting where the next event is a PARTIAL well under magnitude 1, so the threshold has
     // to reject something. Starting at day one, as this once did, put a total eclipse of
     // magnitude 1.65 first and the filter could be deleted without the test noticing.
-    const start = { orbit: 1, day: 9.75 }; // absolute day 374.0
+    const start = { orbit: 1, day: 10.75 }; // absolute day 375.0
     const any = findNextEclipse('lunar', REALISTIC, SEATTLE.lat, SEATTLE.lon, start.orbit, start.day, {
       maxYears: 60,
     })!;
@@ -274,7 +274,7 @@ describe('search behaviour', () => {
 describe('finding the peak when the ridge is steep', () => {
   it('finds a total near the pole that a flat search reported as partial', () => {
     // The ridge scales as 1/cos(latitude); this 80-degree event must exceed 1.03.
-    const hit = findNextEclipse('solar', REALISTIC, 80, 0, 33, 80.020864, {
+    const hit = findNextEclipse('solar', REALISTIC, 80, 0, 26, 222.731761, {
       kinds: ['total'],
       maxYears: 2,
     });
@@ -283,7 +283,7 @@ describe('finding the peak when the ridge is steep', () => {
     expect(hit!.magnitude).toBeGreaterThan(1.03);
 
     // Filtering must select rather than alter the peak.
-    const same = findNextEclipse('solar', REALISTIC, 80, 0, 33, 80.020864, { maxYears: 2 });
+    const same = findNextEclipse('solar', REALISTIC, 80, 0, 26, 222.731761, { maxYears: 2 });
     expect(same!.kind).toBe('total');
     expect(same!.magnitude).toBeCloseTo(hit!.magnitude, 6);
   });
@@ -299,14 +299,13 @@ describe('finding the peak when the ridge is steep', () => {
 
 describe('the stride does not step over brief events', () => {
   it('walks near syzygy more finely than the briefest event lasts', () => {
-    // The shortest solar event in a 600 year survey is this graze, about 6 minutes, where
-    // the penumbra only clips the limb. The stride's floor has to be under it or the walk
-    // steps clean over the event, which is exactly what the old 14.4 minute floor did.
-    // Measured locally rather than by re-deriving the survey, which cost 3 seconds.
-    const FINE = 0.0002;
+    // The briefest solar event in a 600-year survey, 10.94 minutes, where the penumbra only
+    // clips the limb. It is the ONLY one of 1251 under 14.4 minutes, and the stride's floor
+    // has to be under it or the walk steps clean over the event, as the old floor did.
+    const FINE = 0.0001;
     let start = -1;
     let duration = 0;
-    for (let t = 15980.9; t < 15981.05; t += FINE) {
+    for (let t = 90161.75; t < 90161.95; t += FINE) {
       const inside = solarEclipsePossible(moonStateAt(t));
       if (inside && start < 0) start = t;
       else if (!inside && start >= 0) {

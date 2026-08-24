@@ -177,7 +177,7 @@ describe('solar eclipse locality', () => {
 
   it('lands the shadow on the surface of the Earth when it hits at all', () => {
     let hits = 0;
-    for (let t = 0; t < 365.25 * 6; t += 0.02) {
+    for (let t = 0; t < 365.25 * 12; t += 0.02) {
       const p = solarShadowAxisPointKm(moonStateAt(t));
       if (!p) continue;
       hits++;
